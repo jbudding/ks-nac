@@ -1,0 +1,21 @@
+[package]
+name = "radius-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.0", features = ["full"] }
+md5 = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+clap = { version = "4.0", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1.0"
+thiserror = "1.0"
+config = "0.14"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"

@@ -1,0 +1,22 @@
+server:
+  bind_address: "0.0.0.0"
+  auth_port: 1812
+  acct_port: 1813
+  max_clients: 1000
+  request_timeout: 30
+
+logging:
+  level: "info"
+  file: null
+
+clients:
+  - name: "test-nas"
+    ip_address: "127.0.0.1"
+    shared_secret: "testing123"
+    nas_type: "other"
+    enabled: true
+  - name: "local-switch"
+    ip_address: "192.168.1.1"
+    shared_secret: "secret123"
+    nas_type: "switch"
+    enabled: true
