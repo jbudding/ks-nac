@@ -62,6 +62,10 @@ pub const SERVICE_TYPE_NAS_PROMPT: u32 = 7;
 pub const SERVICE_TYPE_AUTHENTICATE_ONLY: u32 = 8;
 pub const SERVICE_TYPE_CALLBACK_NAS_PROMPT: u32 = 9;
 
+// EAP attributes
+pub const EAP_MESSAGE: u8 = 79;
+pub const MESSAGE_AUTHENTICATOR: u8 = 80;
+
 // Acct-Status-Type values
 pub const ACCT_STATUS_START: u32 = 1;
 pub const ACCT_STATUS_STOP: u32 = 2;

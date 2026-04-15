@@ -23,7 +23,7 @@ use tracing_subscriber;
 #[command(name = "radius-server")]
 #[command(about = "A RADIUS server implementation in Rust")]
 struct Args {
-    #[arg(short, long, default_value = "config.yaml")]
+    #[arg(short, long, default_value = "config/config.yaml")]
     config: String,
 
     #[arg(short, long, default_value = "info")]
@@ -142,7 +142,21 @@ impl RadiusServer {
         socket: Arc<UdpSocket>,
     ) -> Result<()> {
         let packet = RadiusPacket::from_bytes(data)?;
+        let username = packet.get_string_attribute(1).unwrap_or_else(|| "<unknown>".to_string());
+        info!(
+            src = %addr,
+            code = ?packet.code,
+            id = packet.identifier,
+            username = %username,
+            "auth request"
+        );
         let response = auth_handler.handle_request(&packet, &client, addr).await?;
+        info!(
+            src = %addr,
+            id = response.identifier,
+            code = ?response.code,
+            "auth response"
+        );
         let response_data = response.to_bytes();
         socket.send_to(&response_data, addr).await?;
         Ok(())
@@ -156,7 +170,21 @@ impl RadiusServer {
         socket: Arc<UdpSocket>,
     ) -> Result<()> {
         let packet = RadiusPacket::from_bytes(data)?;
+        let username = packet.get_string_attribute(1).unwrap_or_else(|| "<unknown>".to_string());
+        info!(
+            src = %addr,
+            code = ?packet.code,
+            id = packet.identifier,
+            username = %username,
+            "acct request"
+        );
         let response = acct_handler.handle_request(&packet, &client, addr).await?;
+        info!(
+            src = %addr,
+            id = response.identifier,
+            code = ?response.code,
+            "acct response"
+        );
         let response_data = response.to_bytes();
         socket.send_to(&response_data, addr).await?;
         Ok(())

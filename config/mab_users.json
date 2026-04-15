@@ -1,0 +1,18 @@
+{
+  "mab_users": [
+    {
+      "mac_address": "aa:06:6c:cd:16:81",
+      "description": "Jeffs iPhone",
+      "attributes": {
+        "Service-Type": "Call-Check"
+      }
+    },
+    {
+      "mac_address": "11:22:33:44:55:66",
+      "description": "Example device 2",
+      "attributes": {
+        "Service-Type": "Call-Check"
+      }
+    }
+  ]
+}

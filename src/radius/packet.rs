@@ -172,6 +172,43 @@ impl RadiusPacket {
         self.get_attribute(attr_type)?.as_string()
     }
 
+    /// Decrypt a PAP User-Password attribute (RFC 2865 §5.2).
+    /// The value is XOR-obfuscated in 16-byte blocks:
+    ///   plain[i] = cipher[i] XOR MD5(secret + cipher_block[i-1])
+    /// with block 0 seeded from the Request-Authenticator.
+    pub fn decrypt_user_password(&self, secret: &str) -> Option<String> {
+        let attr = self.get_attribute(crate::radius::attributes::USER_PASSWORD)?;
+        let cipher = &attr.value;
+        if cipher.is_empty() || cipher.len() % 16 != 0 {
+            return None;
+        }
+
+        let secret_bytes = secret.as_bytes();
+        let mut plain = Vec::with_capacity(cipher.len());
+        let mut prev: [u8; 16] = self.authenticator;
+
+        for (i, chunk) in cipher.chunks(16).enumerate() {
+            let mut hasher = md5::Context::new();
+            hasher.consume(secret_bytes);
+            hasher.consume(&prev);
+            let hash = hasher.compute();
+
+            for (c, h) in chunk.iter().zip(hash.0.iter()) {
+                plain.push(c ^ h);
+            }
+
+            // Next block seeds from this ciphertext chunk
+            prev.copy_from_slice(&cipher[i * 16..(i + 1) * 16]);
+        }
+
+        // Strip trailing null padding
+        let trimmed = match plain.iter().rposition(|&b| b != 0) {
+            Some(last) => &plain[..=last],
+            None => &[],
+        };
+        String::from_utf8(trimmed.to_vec()).ok()
+    }
+
     pub fn set_authenticator(&mut self, authenticator: [u8; 16]) {
         self.authenticator = authenticator;
     }

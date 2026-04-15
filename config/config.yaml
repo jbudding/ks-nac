@@ -6,7 +6,7 @@ server:
   request_timeout: 30
 
 logging:
-  level: "info"
+  level: "debug"
   file: null
 
 clients:
@@ -15,8 +15,18 @@ clients:
     shared_secret: "testing123"
     nas_type: "other"
     enabled: true
-  - name: "local-switch"
-    ip_address: "192.168.1.1"
-    shared_secret: "secret123"
-    nas_type: "switch"
+  - name: "SATHQ-GST-AP4020"
+    ip_address: "10.76.200.104"
+    shared_secret: "notyrs2no"
+    nas_type: "other"
+    enabled: true
+  - name: "SATHQ-LRM-AP4K"
+    ip_address: "10.76.200.100"
+    shared_secret: "notyrs2no"
+    nas_type: "ap"
+    enabled: true
+  - name: "SATHQ-OBRM-AP4K"
+    ip_address: "10.76.200.101"
+    shared_secret: "notyrs2no"
+    nas_type: "ap"
     enabled: true
