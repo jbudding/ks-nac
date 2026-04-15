@@ -66,6 +66,11 @@ pub const SERVICE_TYPE_CALLBACK_NAS_PROMPT: u32 = 9;
 pub const EAP_MESSAGE: u8 = 79;
 pub const MESSAGE_AUTHENTICATOR: u8 = 80;
 
+// Microsoft Vendor-Specific attributes (Vendor-ID 311)
+pub const VENDOR_MICROSOFT: u32 = 311;
+pub const MS_MPPE_SEND_KEY: u8 = 16;
+pub const MS_MPPE_RECV_KEY: u8 = 17;
+
 // Acct-Status-Type values
 pub const ACCT_STATUS_START: u32 = 1;
 pub const ACCT_STATUS_STOP: u32 = 2;

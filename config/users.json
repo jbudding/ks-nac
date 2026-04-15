@@ -1,0 +1,21 @@
+{
+  "users": [
+    {
+      "username": "jbudding",
+      "password": "changeme",
+      "enabled": true,
+      "attributes": {
+        "Service-Type": "Framed-User",
+        "Framed-Protocol": "PPP"
+      }
+    },
+    {
+      "username": "testuser",
+      "password": "testpass",
+      "enabled": true,
+      "attributes": {
+        "Service-Type": "Framed-User"
+      }
+    }
+  ]
+}

@@ -41,6 +41,18 @@ impl AcctHandler {
         client: &Client,
         addr: SocketAddr,
     ) -> Result<RadiusPacket> {
+        let status_type = packet
+            .get_attribute(ACCT_STATUS_TYPE)
+            .and_then(|attr| attr.as_u32())
+            .unwrap_or(0);
+
+        // Accounting-On / Accounting-Off don't carry User-Name or session IDs;
+        // acknowledge them and move on.
+        if status_type == ACCT_STATUS_ACCOUNTING_ON || status_type == ACCT_STATUS_ACCOUNTING_OFF {
+            info!(src = %addr, status = status_type, "Accounting-On/Off received");
+            return self.create_accounting_response(packet, client);
+        }
+
         let username = packet
             .get_string_attribute(USER_NAME)
             .ok_or_else(|| anyhow::anyhow!("Missing User-Name attribute"))?;
@@ -49,21 +61,19 @@ impl AcctHandler {
             .get_string_attribute(ACCT_SESSION_ID)
             .ok_or_else(|| anyhow::anyhow!("Missing Acct-Session-Id attribute"))?;
 
-        let status_type = packet
-            .get_attribute(ACCT_STATUS_TYPE)
-            .and_then(|attr| attr.as_u32())
-            .unwrap_or(0);
-
         info!(
-            "Accounting request for user: {} session: {} status: {} from {}",
-            username, session_id, status_type, addr
+            src = %addr,
+            username = %username,
+            session = %session_id,
+            status = status_type,
+            "Accounting request"
         );
 
         match status_type {
             ACCT_STATUS_START => self.handle_session_start(&username, &session_id, addr).await?,
             ACCT_STATUS_STOP => self.handle_session_stop(&session_id).await?,
             ACCT_STATUS_INTERIM_UPDATE => self.handle_session_update(&session_id).await?,
-            _ => warn!("Unknown accounting status type: {}", status_type),
+            _ => warn!(src = %addr, status = status_type, "Unknown accounting status type"),
         }
 
         self.create_accounting_response(packet, client)

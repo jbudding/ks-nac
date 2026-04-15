@@ -8,6 +8,7 @@ pub enum Code {
     AccessReject = 3,
     AccountingRequest = 4,
     AccountingResponse = 5,
+    AccessChallenge = 11,
 }
 
 impl From<u8> for Code {
@@ -18,6 +19,7 @@ impl From<u8> for Code {
             3 => Code::AccessReject,
             4 => Code::AccountingRequest,
             5 => Code::AccountingResponse,
+            11 => Code::AccessChallenge,
             _ => Code::AccessReject,
         }
     }
@@ -149,7 +151,18 @@ impl RadiusPacket {
     }
 
     pub fn add_attribute(&mut self, attr_type: u8, value: Vec<u8>) {
-        self.attributes.push(RadiusAttribute::new(attr_type, value));
+        // RADIUS attributes have max 253 bytes of value (255 - 2 for type+length)
+        // For EAP-Message (79), split across multiple attributes per RFC 2869
+        const MAX_ATTR_VALUE: usize = 253;
+
+        if value.len() <= MAX_ATTR_VALUE {
+            self.attributes.push(RadiusAttribute::new(attr_type, value));
+        } else {
+            // Split into multiple attributes
+            for chunk in value.chunks(MAX_ATTR_VALUE) {
+                self.attributes.push(RadiusAttribute::new(attr_type, chunk.to_vec()));
+            }
+        }
     }
 
     pub fn add_string_attribute(&mut self, attr_type: u8, value: &str) {
@@ -166,6 +179,22 @@ impl RadiusPacket {
 
     pub fn get_attribute(&self, attr_type: u8) -> Option<&RadiusAttribute> {
         self.attributes.iter().find(|a| a.attr_type == attr_type)
+    }
+
+    /// Get all attributes of a type and concatenate their values.
+    /// Used for EAP-Message which may span multiple attributes.
+    pub fn get_concatenated_attribute(&self, attr_type: u8) -> Option<Vec<u8>> {
+        let values: Vec<&[u8]> = self.attributes
+            .iter()
+            .filter(|a| a.attr_type == attr_type)
+            .map(|a| a.value.as_slice())
+            .collect();
+
+        if values.is_empty() {
+            None
+        } else {
+            Some(values.concat())
+        }
     }
 
     pub fn get_string_attribute(&self, attr_type: u8) -> Option<String> {
@@ -211,6 +240,61 @@ impl RadiusPacket {
 
     pub fn set_authenticator(&mut self, authenticator: [u8; 16]) {
         self.authenticator = authenticator;
+    }
+
+    /// Compute HMAC-MD5(key=secret, msg=data) — RFC 2104.
+    pub fn hmac_md5(secret: &[u8], data: &[u8]) -> [u8; 16] {
+        let mut k = [0u8; 64];
+        if secret.len() <= 64 {
+            k[..secret.len()].copy_from_slice(secret);
+        } else {
+            let h = md5::compute(secret);
+            k[..16].copy_from_slice(&h.0);
+        }
+        let ipad: Vec<u8> = k.iter().map(|b| b ^ 0x36).collect();
+        let opad: Vec<u8> = k.iter().map(|b| b ^ 0x5c).collect();
+
+        let mut inner = ipad;
+        inner.extend_from_slice(data);
+        let inner_hash = md5::compute(&inner);
+
+        let mut outer = opad;
+        outer.extend_from_slice(&inner_hash.0);
+        md5::compute(&outer).0
+    }
+
+    /// Build a response packet, set the Response-Authenticator, and append a
+    /// valid Message-Authenticator attribute (type 80, RFC 3579 §3.2).
+    ///
+    /// Call this instead of `calculate_response_authenticator` whenever the
+    /// packet will be sent in response to an EAP exchange (Access-Challenge,
+    /// Access-Accept, Access-Reject carrying EAP-Message).
+    pub fn finalize_with_message_authenticator(
+        &mut self,
+        request_authenticator: &[u8; 16],
+        secret: &str,
+    ) {
+        // Add a placeholder Message-Authenticator (16 zeros).
+        self.add_attribute(crate::radius::attributes::MESSAGE_AUTHENTICATOR, vec![0u8; 16]);
+
+        // Per RFC 3579 §3.2: when computing Message-Authenticator for a response,
+        // the authenticator field MUST contain the Request-Authenticator.
+        self.authenticator = *request_authenticator;
+        let packet_bytes = self.to_bytes();
+        let mac = Self::hmac_md5(secret.as_bytes(), &packet_bytes);
+
+        // Replace the placeholder with the real MAC.
+        if let Some(attr) = self
+            .attributes
+            .iter_mut()
+            .rev()
+            .find(|a| a.attr_type == crate::radius::attributes::MESSAGE_AUTHENTICATOR)
+        {
+            attr.value = mac.to_vec();
+        }
+
+        // Now compute the actual Response-Authenticator.
+        self.calculate_response_authenticator(request_authenticator, secret);
     }
 
     pub fn calculate_response_authenticator(&mut self, request_authenticator: &[u8; 16], secret: &str) {

@@ -4,7 +4,7 @@ mod handlers;
 mod models;
 mod radius;
 
-use auth::{Authenticator, MemoryBackend};
+use auth::{Authenticator, JsonBackend, MemoryBackend};
 use config::ServerConfig;
 use handlers::{AuthHandler, AcctHandler};
 use models::Client;
@@ -47,7 +47,17 @@ impl RadiusServer {
             }
         };
 
-        let backend = Arc::new(MemoryBackend::new());
+        let backend: Arc<dyn auth::AuthBackend> =
+            match JsonBackend::load_from_file("config/users.json") {
+                Ok(b) => {
+                    info!("User database loaded from config/users.json");
+                    Arc::new(b)
+                }
+                Err(e) => {
+                    warn!("Could not load config/users.json ({}), using built-in test users", e);
+                    Arc::new(MemoryBackend::new())
+                }
+            };
         let authenticator = Arc::new(Authenticator::new(backend));
         let auth_handler = Arc::new(AuthHandler::new(authenticator)?);
         let acct_handler = Arc::new(AcctHandler::new()?);
