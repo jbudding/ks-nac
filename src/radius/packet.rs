@@ -201,6 +201,35 @@ impl RadiusPacket {
         self.get_attribute(attr_type)?.as_string()
     }
 
+    /// Log all attributes in the packet for debugging.
+    pub fn log_attributes(&self) {
+        use tracing::debug;
+        for attr in &self.attributes {
+            let value_display = if attr.attr_type == 2 {
+                // User-Password - don't log the actual value
+                "[encrypted]".to_string()
+            } else if let Some(s) = attr.as_string() {
+                // Printable string
+                format!("\"{}\"", s)
+            } else if attr.value.len() == 4 {
+                // Might be an IP or integer
+                format!("{:?} (0x{:08x})", attr.value, u32::from_be_bytes([
+                    attr.value[0], attr.value[1], attr.value[2], attr.value[3]
+                ]))
+            } else {
+                // Hex dump for binary data
+                format!("{:02x?}", attr.value)
+            };
+            debug!(
+                attr_type = attr.attr_type,
+                attr_name = %attr_type_name(attr.attr_type),
+                value = %value_display,
+                len = attr.value.len(),
+                "attribute"
+            );
+        }
+    }
+
     /// Decrypt a PAP User-Password attribute (RFC 2865 §5.2).
     /// The value is XOR-obfuscated in 16-byte blocks:
     ///   plain[i] = cipher[i] XOR MD5(secret + cipher_block[i-1])
@@ -307,5 +336,35 @@ impl RadiusPacket {
         let hash = hasher.compute();
 
         self.authenticator = hash.0;
+    }
+}
+
+/// Get human-readable name for common RADIUS attribute types.
+fn attr_type_name(attr_type: u8) -> &'static str {
+    match attr_type {
+        1 => "User-Name",
+        2 => "User-Password",
+        3 => "CHAP-Password",
+        4 => "NAS-IP-Address",
+        5 => "NAS-Port",
+        6 => "Service-Type",
+        7 => "Framed-Protocol",
+        8 => "Framed-IP-Address",
+        12 => "Framed-MTU",
+        24 => "State",
+        25 => "Class",
+        26 => "Vendor-Specific",
+        27 => "Session-Timeout",
+        28 => "Idle-Timeout",
+        30 => "Called-Station-Id",
+        31 => "Calling-Station-Id",
+        32 => "NAS-Identifier",
+        40 => "Acct-Status-Type",
+        44 => "Acct-Session-Id",
+        61 => "NAS-Port-Type",
+        79 => "EAP-Message",
+        80 => "Message-Authenticator",
+        87 => "NAS-Port-Id",
+        _ => "Unknown",
     }
 }

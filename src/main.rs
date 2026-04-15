@@ -160,6 +160,7 @@ impl RadiusServer {
             username = %username,
             "auth request"
         );
+        packet.log_attributes();
         let response = auth_handler.handle_request(&packet, &client, addr).await?;
         info!(
             src = %addr,
@@ -188,6 +189,7 @@ impl RadiusServer {
             username = %username,
             "acct request"
         );
+        packet.log_attributes();
         let response = acct_handler.handle_request(&packet, &client, addr).await?;
         info!(
             src = %addr,
