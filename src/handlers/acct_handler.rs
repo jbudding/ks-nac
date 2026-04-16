@@ -13,11 +13,20 @@ pub struct AcctHandler {
 
 impl AcctHandler {
     pub fn new() -> Result<Self> {
-        let dictionary = Dictionary::new();
+        Self::new_with_config("config/dictionaries.json")
+    }
+
+    pub fn new_with_config(dict_config_path: &str) -> Result<Self> {
+        let dictionary = Dictionary::load(dict_config_path);
         Ok(Self {
             dictionary,
             sessions: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Get a reference to the dictionary for attribute logging.
+    pub fn dictionary(&self) -> &Dictionary {
+        &self.dictionary
     }
 
     pub async fn handle_request(

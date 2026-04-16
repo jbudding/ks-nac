@@ -29,7 +29,12 @@ impl AuthHandler {
     }
 
     pub fn new_with_mab(authenticator: Arc<Authenticator>, mab_path: &str) -> Result<Self> {
-        let dictionary = Dictionary::new();
+        Self::new_with_config(authenticator, mab_path, "config/dictionaries.json")
+    }
+
+    pub fn new_with_config(authenticator: Arc<Authenticator>, mab_path: &str, dict_config_path: &str) -> Result<Self> {
+        let dictionary = Dictionary::load(dict_config_path);
+        info!("Loaded {} vendor dictionaries", dictionary.vendor_ids().len());
         let mab_list = match MabList::load_from_file(mab_path) {
             Ok(list) => {
                 info!("MAB user list loaded from {}", mab_path);
@@ -452,5 +457,10 @@ impl AuthHandler {
         let mut response = RadiusPacket::new(Code::AccessReject, request.identifier);
         response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
         Ok(response)
+    }
+
+    /// Get a reference to the dictionary for attribute logging.
+    pub fn dictionary(&self) -> &Dictionary {
+        &self.dictionary
     }
 }

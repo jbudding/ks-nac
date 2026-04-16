@@ -11,7 +11,7 @@ use models::Client;
 
 use anyhow::Result;
 use clap::Parser;
-use crate::radius::{RadiusPacket, Dictionary};
+use crate::radius::RadiusPacket;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -160,7 +160,7 @@ impl RadiusServer {
             username = %username,
             "auth request"
         );
-        packet.log_attributes();
+        packet.log_attributes_with_dict(Some(auth_handler.dictionary()));
         let response = auth_handler.handle_request(&packet, &client, addr).await?;
         info!(
             src = %addr,
@@ -189,7 +189,7 @@ impl RadiusServer {
             username = %username,
             "acct request"
         );
-        packet.log_attributes();
+        packet.log_attributes_with_dict(Some(acct_handler.dictionary()));
         let response = acct_handler.handle_request(&packet, &client, addr).await?;
         info!(
             src = %addr,

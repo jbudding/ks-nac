@@ -1,0 +1,46 @@
+{
+  "vendor_name": "Aerohive",
+  "vendor_id": 26928,
+  "attributes": [
+    {"code": 1, "name": "Extreme-User-Vlan", "type": "integer"},
+    {"code": 3, "name": "Extreme-Libsip-Patron-Info", "type": "octets"},
+    {"code": 4, "name": "Extreme-Libsip-Action", "type": "integer"},
+    {"code": 5, "name": "Extreme-Libsip-Additional-Message", "type": "octets"},
+    {"code": 6, "name": "Extreme-User-Profile-Attribute", "type": "integer"},
+    {"code": 7, "name": "Extreme-Data-Usage-Limit", "type": "octets"},
+    {"code": 8, "name": "Extreme-AVPair", "type": "string"},
+    {"code": 9, "name": "Extreme-Radius-Code", "type": "integer"},
+    {"code": 201, "name": "Extreme-PPSK-Request", "type": "octets"},
+    {"code": 202, "name": "Extreme-PPSK-PMK", "type": "octets"},
+    {"code": 203, "name": "Extreme-IDM-Message", "type": "integer"},
+    {"code": 204, "name": "Extreme-NT-Identity", "type": "integer"},
+    {"code": 205, "name": "Extreme-User-Language", "type": "string"},
+    {"code": 207, "name": "Extreme-Time-Zone-Offset", "type": "integer"},
+    {"code": 208, "name": "Extreme-Daylight-Saving-Offset", "type": "integer"},
+    {"code": 209, "name": "Extreme-Client-Monitor-Session", "type": "octets"},
+    {"code": 210, "name": "Extreme-Client-Monitor-Problem", "type": "integer"},
+    {"code": 211, "name": "Extreme-IDM-Redirect-URL", "type": "string"},
+    {"code": 212, "name": "Extreme-MGT-MAC-Address", "type": "string"},
+    {"code": 213, "name": "Extreme-Auth-Source", "type": "integer"}
+  ],
+  "values": {
+    "AH-HM-Admin-Group-Id": {
+      "Read-Only-Admin": 0,
+      "Super-Admin": 1,
+      "Read-Write-Admin": 2
+    },
+    "Extreme-Libsip-Action": {
+      "Permit": 0,
+      "Restricted": 1,
+      "Deny": 2
+    },
+    "Extreme-Radius-Code": {
+      "Disconnect-Request": 1,
+      "COA-Request": 2
+    },
+    "Extreme-Auth-Source": {
+      "Service": 1,
+      "Non-Service": 2
+    }
+  }
+}

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use anyhow::Result;
+use super::dictionary::Dictionary;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Code {
@@ -29,6 +29,33 @@ impl From<u8> for Code {
 pub struct RadiusAttribute {
     pub attr_type: u8,
     pub value: Vec<u8>,
+}
+
+/// Parsed Vendor-Specific Attribute sub-attribute.
+#[derive(Debug, Clone)]
+pub struct VsaSubAttribute {
+    pub vendor_id: u32,
+    pub attr_type: u8,
+    pub value: Vec<u8>,
+}
+
+impl VsaSubAttribute {
+    pub fn as_string(&self) -> Option<String> {
+        String::from_utf8(self.value.clone()).ok()
+    }
+
+    pub fn as_u32(&self) -> Option<u32> {
+        if self.value.len() == 4 {
+            Some(u32::from_be_bytes([
+                self.value[0],
+                self.value[1],
+                self.value[2],
+                self.value[3],
+            ]))
+        } else {
+            None
+        }
+    }
 }
 
 impl RadiusAttribute {
@@ -64,6 +91,44 @@ impl RadiusAttribute {
         } else {
             None
         }
+    }
+
+    /// Parse a Vendor-Specific attribute (type 26) into sub-attributes.
+    /// VSA format: 4-byte vendor ID, followed by sub-attributes (type, length, value).
+    pub fn parse_vsa(&self) -> Option<Vec<VsaSubAttribute>> {
+        if self.attr_type != 26 || self.value.len() < 6 {
+            return None;
+        }
+
+        let vendor_id = u32::from_be_bytes([
+            self.value[0],
+            self.value[1],
+            self.value[2],
+            self.value[3],
+        ]);
+
+        let mut sub_attrs = Vec::new();
+        let mut pos = 4;
+
+        while pos + 2 <= self.value.len() {
+            let sub_type = self.value[pos];
+            let sub_len = self.value[pos + 1] as usize;
+
+            if sub_len < 2 || pos + sub_len > self.value.len() {
+                break;
+            }
+
+            let sub_value = self.value[pos + 2..pos + sub_len].to_vec();
+            sub_attrs.push(VsaSubAttribute {
+                vendor_id,
+                attr_type: sub_type,
+                value: sub_value,
+            });
+
+            pos += sub_len;
+        }
+
+        Some(sub_attrs)
     }
 }
 
@@ -203,30 +268,71 @@ impl RadiusPacket {
 
     /// Log all attributes in the packet for debugging.
     pub fn log_attributes(&self) {
+        self.log_attributes_with_dict(None);
+    }
+
+    /// Log all attributes in the packet for debugging, using dictionary for VSA names.
+    pub fn log_attributes_with_dict(&self, dict: Option<&Dictionary>) {
         use tracing::debug;
         for attr in &self.attributes {
-            let value_display = if attr.attr_type == 2 {
-                // User-Password - don't log the actual value
-                "[encrypted]".to_string()
-            } else if let Some(s) = attr.as_string() {
-                // Printable string
-                format!("\"{}\"", s)
-            } else if attr.value.len() == 4 {
-                // Might be an IP or integer
-                format!("{:?} (0x{:08x})", attr.value, u32::from_be_bytes([
-                    attr.value[0], attr.value[1], attr.value[2], attr.value[3]
-                ]))
+            if attr.attr_type == 26 {
+                // Vendor-Specific attribute - parse and log sub-attributes
+                if let Some(sub_attrs) = attr.parse_vsa() {
+                    for sub in &sub_attrs {
+                        let vendor_name = dict
+                            .and_then(|d| d.get_vendor_name(sub.vendor_id))
+                            .map(|s| s.as_str())
+                            .unwrap_or("Unknown-Vendor");
+                        let attr_name = dict
+                            .and_then(|d| d.get_vsa_name(sub.vendor_id, sub.attr_type))
+                            .unwrap_or("Unknown-VSA");
+
+                        let value_display = format_vsa_value(sub, dict);
+
+                        debug!(
+                            vendor_id = sub.vendor_id,
+                            vendor = %vendor_name,
+                            attr_type = sub.attr_type,
+                            attr_name = %attr_name,
+                            value = %value_display,
+                            len = sub.value.len(),
+                            "vsa"
+                        );
+                    }
+                } else {
+                    // Couldn't parse VSA, log raw
+                    debug!(
+                        attr_type = attr.attr_type,
+                        attr_name = "Vendor-Specific",
+                        value = %format!("{:02x?}", attr.value),
+                        len = attr.value.len(),
+                        "attribute (malformed VSA)"
+                    );
+                }
             } else {
-                // Hex dump for binary data
-                format!("{:02x?}", attr.value)
-            };
-            debug!(
-                attr_type = attr.attr_type,
-                attr_name = %attr_type_name(attr.attr_type),
-                value = %value_display,
-                len = attr.value.len(),
-                "attribute"
-            );
+                let value_display = if attr.attr_type == 2 {
+                    // User-Password - don't log the actual value
+                    "[encrypted]".to_string()
+                } else if let Some(s) = attr.as_string() {
+                    // Printable string
+                    format!("\"{}\"", s)
+                } else if attr.value.len() == 4 {
+                    // Might be an IP or integer
+                    format!("{:?} (0x{:08x})", attr.value, u32::from_be_bytes([
+                        attr.value[0], attr.value[1], attr.value[2], attr.value[3]
+                    ]))
+                } else {
+                    // Hex dump for binary data
+                    format!("{:02x?}", attr.value)
+                };
+                debug!(
+                    attr_type = attr.attr_type,
+                    attr_name = %attr_type_name(attr.attr_type),
+                    value = %value_display,
+                    len = attr.value.len(),
+                    "attribute"
+                );
+            }
         }
     }
 
@@ -367,4 +473,34 @@ fn attr_type_name(attr_type: u8) -> &'static str {
         87 => "NAS-Port-Id",
         _ => "Unknown",
     }
+}
+
+/// Format a VSA sub-attribute value for display.
+fn format_vsa_value(sub: &VsaSubAttribute, dict: Option<&Dictionary>) -> String {
+    // Try to resolve named value from dictionary
+    if let Some(d) = dict {
+        if let Some(attr_name) = d.get_vsa_name(sub.vendor_id, sub.attr_type) {
+            if let Some(val) = sub.as_u32() {
+                if let Some(value_name) = d.get_vsa_value_name(sub.vendor_id, attr_name, val) {
+                    return format!("{} ({})", value_name, val);
+                }
+            }
+        }
+    }
+
+    // Fall back to type-based formatting
+    if let Some(s) = sub.as_string() {
+        if s.chars().all(|c| c.is_ascii_graphic() || c == ' ') {
+            return format!("\"{}\"", s);
+        }
+    }
+
+    if sub.value.len() == 4 {
+        let val = u32::from_be_bytes([
+            sub.value[0], sub.value[1], sub.value[2], sub.value[3]
+        ]);
+        return format!("{}", val);
+    }
+
+    format!("{:02x?}", sub.value)
 }
