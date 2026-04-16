@@ -5,7 +5,8 @@
       "description": "Standard employee access",
       "attributes": {
         "Service-Type": "Framed-User",
-        "Framed-Protocol": "PPP"
+        "Framed-Protocol": "PPP",
+        "Filter-Id": "EMPLOYEE-ACL"
       }
     },
     {
@@ -13,14 +14,16 @@
       "description": "Limited contractor access",
       "attributes": {
         "Service-Type": "Framed-User",
-        "Session-Timeout": "28800"
+        "Session-Timeout": "28800",
+        "Filter-Id": "CONTRACTOR-ACL"
       }
     },
     {
       "name": "admins",
       "description": "Administrative access",
       "attributes": {
-        "Service-Type": "Administrative-User"
+        "Service-Type": "Administrative-User",
+        "Filter-Id": "ADMIN-ACL"
       }
     }
   ]

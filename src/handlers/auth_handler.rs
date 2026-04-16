@@ -340,6 +340,8 @@ impl AuthHandler {
         for (key, value) in &user.attributes {
             if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
                 response.add_string_attribute(attr_type, value);
+            } else {
+                warn!(attribute = %key, "Unknown attribute in user, skipping");
             }
         }
 
@@ -443,6 +445,8 @@ impl AuthHandler {
         for (key, value) in &entry.attributes {
             if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
                 response.add_string_attribute(attr_type, value);
+            } else {
+                warn!(attribute = %key, "Unknown attribute in MAB entry, skipping");
             }
         }
         response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
@@ -458,6 +462,8 @@ impl AuthHandler {
         for (key, value) in &user.attributes {
             if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
                 response.add_string_attribute(attr_type, value);
+            } else {
+                warn!(attribute = %key, "Unknown attribute in user, skipping");
             }
         }
         response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
