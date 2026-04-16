@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
+use std::path::Path;
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 
 /// VSA attribute definition.
 #[derive(Debug, Clone, Deserialize)]
@@ -25,8 +26,32 @@ pub struct VendorDictionary {
 /// Dictionary configuration file.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DictionaryConfig {
+    /// JSON format dictionary files.
+    #[serde(default)]
     pub dictionaries: Vec<String>,
+    /// FreeRADIUS format dictionary files.
+    #[serde(default)]
+    pub freeradius_dictionaries: Vec<String>,
+    /// Directory to scan for dictionary.* files (FreeRADIUS format).
+    #[serde(default)]
+    pub freeradius_dictionary_dir: Option<String>,
 }
+
+/// Error type for FreeRADIUS dictionary parsing.
+#[derive(Debug)]
+pub struct DictionaryParseError {
+    pub file: String,
+    pub line: usize,
+    pub message: String,
+}
+
+impl std::fmt::Display for DictionaryParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}: {}", self.file, self.line, self.message)
+    }
+}
+
+impl std::error::Error for DictionaryParseError {}
 
 #[derive(Debug, Clone)]
 pub struct Dictionary {
@@ -68,13 +93,264 @@ impl Dictionary {
         let config_data = fs::read_to_string(config_path)?;
         let config: DictionaryConfig = serde_json::from_str(&config_data)?;
 
+        // Load JSON format dictionaries
         for dict_path in &config.dictionaries {
             if let Err(e) = self.load_vendor_dictionary(dict_path) {
-                warn!("Failed to load dictionary {}: {}", dict_path, e);
+                warn!("Failed to load JSON dictionary {}: {}", dict_path, e);
+            }
+        }
+
+        // Load FreeRADIUS format dictionaries
+        for dict_path in &config.freeradius_dictionaries {
+            if let Err(e) = self.load_freeradius_dictionary(dict_path) {
+                warn!("Failed to load FreeRADIUS dictionary {}: {}", dict_path, e);
+            }
+        }
+
+        // Scan directory for dictionary.* files
+        if let Some(ref dir) = config.freeradius_dictionary_dir {
+            if let Err(e) = self.scan_freeradius_directory(dir) {
+                warn!("Failed to scan FreeRADIUS dictionary directory {}: {}", dir, e);
             }
         }
 
         Ok(())
+    }
+
+    /// Scan a directory for dictionary.* files and load them.
+    pub fn scan_freeradius_directory(&mut self, dir: &str) -> anyhow::Result<()> {
+        let path = Path::new(dir);
+        if !path.is_dir() {
+            return Err(anyhow::anyhow!("Not a directory: {}", dir));
+        }
+
+        let entries = fs::read_dir(path)?;
+        let mut loaded = 0;
+
+        for entry in entries {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let file_name_str = file_name.to_string_lossy();
+
+            // Only process files starting with "dictionary."
+            if file_name_str.starts_with("dictionary.") && entry.file_type()?.is_file() {
+                let file_path = entry.path();
+                let file_path_str = file_path.to_string_lossy();
+
+                match self.load_freeradius_dictionary(&file_path_str) {
+                    Ok(()) => loaded += 1,
+                    Err(e) => warn!("Failed to load {}: {}", file_path_str, e),
+                }
+            }
+        }
+
+        info!(dir = %dir, count = loaded, "Scanned FreeRADIUS dictionary directory");
+        Ok(())
+    }
+
+    /// Load a FreeRADIUS format dictionary file.
+    pub fn load_freeradius_dictionary(&mut self, path: &str) -> anyhow::Result<()> {
+        let content = fs::read_to_string(path)?;
+        self.parse_freeradius_dictionary(path, &content)
+    }
+
+    /// Parse FreeRADIUS dictionary content with syntax validation.
+    fn parse_freeradius_dictionary(&mut self, file_path: &str, content: &str) -> anyhow::Result<()> {
+        let mut current_vendor: Option<(String, u32)> = None;
+        let mut vendors_found: HashMap<String, u32> = HashMap::new();
+        let mut vendor_attributes: HashMap<u32, Vec<VsaAttribute>> = HashMap::new();
+        let mut vendor_values: HashMap<u32, HashMap<String, HashMap<String, u32>>> = HashMap::new();
+
+        for (line_num, line) in content.lines().enumerate() {
+            let line_number = line_num + 1;
+            let line = line.trim();
+
+            // Skip empty lines and comments
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // Parse tokens
+            let tokens: Vec<&str> = line.split_whitespace().collect();
+            if tokens.is_empty() {
+                continue;
+            }
+
+            match tokens[0].to_uppercase().as_str() {
+                "VENDOR" => {
+                    if tokens.len() < 3 {
+                        return Err(DictionaryParseError {
+                            file: file_path.to_string(),
+                            line: line_number,
+                            message: "VENDOR requires name and id".to_string(),
+                        }.into());
+                    }
+                    let vendor_name = tokens[1].to_string();
+                    let vendor_id: u32 = tokens[2].parse().map_err(|_| DictionaryParseError {
+                        file: file_path.to_string(),
+                        line: line_number,
+                        message: format!("Invalid vendor ID: {}", tokens[2]),
+                    })?;
+                    vendors_found.insert(vendor_name.clone(), vendor_id);
+                    debug!(vendor = %vendor_name, id = vendor_id, "Found VENDOR");
+                }
+                "BEGIN-VENDOR" => {
+                    if tokens.len() < 2 {
+                        return Err(DictionaryParseError {
+                            file: file_path.to_string(),
+                            line: line_number,
+                            message: "BEGIN-VENDOR requires vendor name".to_string(),
+                        }.into());
+                    }
+                    let vendor_name = tokens[1];
+                    let vendor_id = vendors_found.get(vendor_name).copied().ok_or_else(|| {
+                        DictionaryParseError {
+                            file: file_path.to_string(),
+                            line: line_number,
+                            message: format!("Unknown vendor: {} (VENDOR not defined before BEGIN-VENDOR)", vendor_name),
+                        }
+                    })?;
+                    current_vendor = Some((vendor_name.to_string(), vendor_id));
+                }
+                "END-VENDOR" => {
+                    if tokens.len() < 2 {
+                        return Err(DictionaryParseError {
+                            file: file_path.to_string(),
+                            line: line_number,
+                            message: "END-VENDOR requires vendor name".to_string(),
+                        }.into());
+                    }
+                    let vendor_name = tokens[1];
+                    if let Some((ref current_name, _)) = current_vendor {
+                        if current_name != vendor_name {
+                            return Err(DictionaryParseError {
+                                file: file_path.to_string(),
+                                line: line_number,
+                                message: format!("END-VENDOR {} does not match BEGIN-VENDOR {}", vendor_name, current_name),
+                            }.into());
+                        }
+                    }
+                    current_vendor = None;
+                }
+                "ATTRIBUTE" => {
+                    if tokens.len() < 4 {
+                        return Err(DictionaryParseError {
+                            file: file_path.to_string(),
+                            line: line_number,
+                            message: "ATTRIBUTE requires name, code, and type".to_string(),
+                        }.into());
+                    }
+                    let attr_name = tokens[1].to_string();
+                    let attr_code: u8 = tokens[2].parse().map_err(|_| DictionaryParseError {
+                        file: file_path.to_string(),
+                        line: line_number,
+                        message: format!("Invalid attribute code: {}", tokens[2]),
+                    })?;
+                    let attr_type = Self::normalize_type(tokens[3]);
+
+                    if let Some((_, vendor_id)) = current_vendor {
+                        vendor_attributes.entry(vendor_id).or_default().push(VsaAttribute {
+                            code: attr_code,
+                            name: attr_name,
+                            attr_type,
+                        });
+                    }
+                    // Attributes outside vendor blocks are standard RADIUS attributes (ignored for VSA loading)
+                }
+                "VALUE" => {
+                    if tokens.len() < 4 {
+                        return Err(DictionaryParseError {
+                            file: file_path.to_string(),
+                            line: line_number,
+                            message: "VALUE requires attribute-name, value-name, and number".to_string(),
+                        }.into());
+                    }
+                    let attr_name = tokens[1].to_string();
+                    let value_name = tokens[2].to_string();
+                    let value_num: u32 = tokens[3].parse().map_err(|_| DictionaryParseError {
+                        file: file_path.to_string(),
+                        line: line_number,
+                        message: format!("Invalid value number: {}", tokens[3]),
+                    })?;
+
+                    if let Some((_, vendor_id)) = current_vendor {
+                        vendor_values
+                            .entry(vendor_id)
+                            .or_default()
+                            .entry(attr_name)
+                            .or_default()
+                            .insert(value_name, value_num);
+                    }
+                }
+                "ALIAS" | "$INCLUDE" | "FLAGS" | "STRUCT" | "MEMBER" | "DEFINE" | "PROTOCOL" | "ENUM" => {
+                    // Skip these directives (not relevant for basic VSA loading)
+                    debug!(line = line_number, directive = tokens[0], "Skipping directive");
+                }
+                _ => {
+                    // Unknown directive - warn but continue
+                    debug!(
+                        file = file_path,
+                        line = line_number,
+                        directive = tokens[0],
+                        "Unknown directive, skipping"
+                    );
+                }
+            }
+        }
+
+        // Check for unclosed vendor block
+        if let Some((vendor_name, _)) = current_vendor {
+            return Err(DictionaryParseError {
+                file: file_path.to_string(),
+                line: content.lines().count(),
+                message: format!("Missing END-VENDOR for {}", vendor_name),
+            }.into());
+        }
+
+        // Register all found vendors
+        for (vendor_name, vendor_id) in &vendors_found {
+            let attributes = vendor_attributes.remove(vendor_id).unwrap_or_default();
+            let values = vendor_values.remove(vendor_id).unwrap_or_default();
+
+            if !attributes.is_empty() {
+                info!(
+                    vendor = %vendor_name,
+                    vendor_id = vendor_id,
+                    attributes = attributes.len(),
+                    values = values.len(),
+                    "Loaded FreeRADIUS VSA dictionary"
+                );
+
+                let vendor_dict = VendorDictionary {
+                    vendor_name: vendor_name.clone(),
+                    vendor_id: *vendor_id,
+                    attributes,
+                    values,
+                };
+
+                self.vendor_names.insert(*vendor_id, vendor_name.clone());
+                self.vendors.insert(*vendor_id, vendor_dict);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Normalize FreeRADIUS type names to internal types.
+    fn normalize_type(type_str: &str) -> String {
+        match type_str.to_lowercase().as_str() {
+            "uint32" | "integer" | "integer32" => "integer".to_string(),
+            "uint16" | "short" => "short".to_string(),
+            "uint8" | "byte" => "byte".to_string(),
+            "ipaddr" | "ipv4addr" => "ipaddr".to_string(),
+            "ipv6addr" => "ipv6addr".to_string(),
+            "ipv6prefix" => "ipv6prefix".to_string(),
+            "octets" | "tlv" => "octets".to_string(),
+            "string" | "text" => "string".to_string(),
+            "ether" => "ether".to_string(),
+            "date" | "time" => "date".to_string(),
+            _ => type_str.to_string(),
+        }
     }
 
     /// Load a single vendor dictionary from JSON file.

@@ -1,5 +1,7 @@
 {
   "dictionaries": [
     "config/dictionaries/aerohive.json"
-  ]
+  ],
+  "freeradius_dictionaries": [],
+  "freeradius_dictionary_dir": "config/dictionaries"
 }
