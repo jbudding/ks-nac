@@ -337,12 +337,16 @@ impl AuthHandler {
         let send_key = self.encrypt_mppe_key(&msk[32..64], &request.authenticator, &client.shared_secret);
         response.add_attribute(VENDOR_SPECIFIC, self.build_mppe_vsa(MS_MPPE_SEND_KEY, &send_key));
 
+        let filter_id = user.attributes.get("Filter-Id");
         for (key, value) in &user.attributes {
             if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
                 response.add_string_attribute(attr_type, value);
             } else {
                 warn!(attribute = %key, "Unknown attribute in user, skipping");
             }
+        }
+        if let Some(filter) = filter_id {
+            info!(filter_id = %filter, "Returning Filter-Id in EAP accept");
         }
 
         response.finalize_with_message_authenticator(&request.authenticator, &client.shared_secret);
@@ -442,12 +446,16 @@ impl AuthHandler {
 
     fn create_mab_accept(&self, request: &RadiusPacket, entry: &MabEntry, client: &Client) -> Result<RadiusPacket> {
         let mut response = RadiusPacket::new(Code::AccessAccept, request.identifier);
+        let filter_id = entry.attributes.get("Filter-Id");
         for (key, value) in &entry.attributes {
             if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
                 response.add_string_attribute(attr_type, value);
             } else {
                 warn!(attribute = %key, "Unknown attribute in MAB entry, skipping");
             }
+        }
+        if let Some(filter) = filter_id {
+            info!(filter_id = %filter, "Returning Filter-Id in MAB accept");
         }
         response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
         Ok(response)
@@ -459,12 +467,16 @@ impl AuthHandler {
 
     fn create_access_accept(&self, request: &RadiusPacket, user: &crate::models::User, client: &Client) -> Result<RadiusPacket> {
         let mut response = RadiusPacket::new(Code::AccessAccept, request.identifier);
+        let filter_id = user.attributes.get("Filter-Id");
         for (key, value) in &user.attributes {
             if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
                 response.add_string_attribute(attr_type, value);
             } else {
                 warn!(attribute = %key, "Unknown attribute in user, skipping");
             }
+        }
+        if let Some(filter) = filter_id {
+            info!(filter_id = %filter, "Returning Filter-Id in user accept");
         }
         response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
         Ok(response)
