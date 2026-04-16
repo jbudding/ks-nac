@@ -3,7 +3,7 @@ use crate::auth::{
     EapPacket, TtlsSession, create_tls_config,
     EAP_REQUEST, EAP_RESPONSE, EAP_SUCCESS, EAP_FAILURE, EAP_TYPE_IDENTITY, EAP_TYPE_TTLS,
 };
-use crate::models::Client;
+use crate::models::{Client, GroupStore};
 use crate::radius::{RadiusPacket, Code, Dictionary, attributes::*};
 use anyhow::Result;
 use rustls::server::ServerConfig;
@@ -33,11 +33,21 @@ impl AuthHandler {
     }
 
     pub fn new_with_config(authenticator: Arc<Authenticator>, mab_path: &str, dict_config_path: &str) -> Result<Self> {
+        Self::new_with_groups(authenticator, mab_path, dict_config_path, None)
+    }
+
+    pub fn new_with_groups(
+        authenticator: Arc<Authenticator>,
+        mab_path: &str,
+        dict_config_path: &str,
+        mab_groups: Option<GroupStore>,
+    ) -> Result<Self> {
         let dictionary = Dictionary::load(dict_config_path);
         info!("Loaded {} vendor dictionaries", dictionary.vendor_ids().len());
-        let mab_list = match MabList::load_from_file(mab_path) {
+
+        let mab_list = match MabList::load_with_groups(mab_path, mab_groups) {
             Ok(list) => {
-                info!("MAB user list loaded from {}", mab_path);
+                info!("MAB user list loaded: {} entries from {}", list.len(), mab_path);
                 Some(list)
             }
             Err(e) => {
@@ -45,6 +55,7 @@ impl AuthHandler {
                 None
             }
         };
+
         let tls_config = create_tls_config()?;
         info!("EAP-TTLS TLS configuration initialized");
         Ok(Self {

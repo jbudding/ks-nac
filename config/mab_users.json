@@ -3,15 +3,21 @@
     {
       "mac_address": "aa:06:6c:cd:16:81",
       "description": "Jeffs iPhone",
-      "attributes": {
-        "Service-Type": "Call-Check"
-      }
+      "group": "phones",
+      "attributes": {}
     },
     {
       "mac_address": "11:22:33:44:55:66",
-      "description": "Example device 2",
+      "description": "Office printer",
+      "group": "printers",
+      "attributes": {}
+    },
+    {
+      "mac_address": "de:ad:be:ef:ca:fe",
+      "description": "IoT sensor with custom timeout",
+      "group": "iot",
       "attributes": {
-        "Service-Type": "Call-Check"
+        "Session-Timeout": "43200"
       }
     }
   ]

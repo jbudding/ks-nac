@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use serde::Deserialize;
 use std::collections::HashMap;
-use crate::models::User;
+use crate::models::{User, GroupStore};
 use anyhow::Result;
+use tracing::warn;
 
 #[async_trait]
 pub trait AuthBackend: Send + Sync {
@@ -61,6 +62,10 @@ struct UserEntry {
     password: String,
     #[serde(default = "default_true")]
     enabled: bool,
+    /// Optional group name to inherit attributes from.
+    #[serde(default)]
+    group: Option<String>,
+    /// Direct attributes (merged with group attributes, overriding on conflict).
     #[serde(default)]
     attributes: HashMap<String, String>,
 }
@@ -69,22 +74,55 @@ fn default_true() -> bool { true }
 
 pub struct JsonBackend {
     users: HashMap<String, User>,
+    group_store: GroupStore,
 }
 
 impl JsonBackend {
+    /// Load users from file without group support.
     pub fn load_from_file(path: &str) -> Result<Self> {
+        Self::load_with_groups(path, None)
+    }
+
+    /// Load users from file with optional group store for attribute inheritance.
+    pub fn load_with_groups(path: &str, group_store: Option<GroupStore>) -> Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let file: UserFile = serde_json::from_str(&content)?;
+        let group_store = group_store.unwrap_or_default();
         let mut users = HashMap::new();
+
         for entry in file.users {
             let mut user = User::new(entry.username.clone(), entry.password);
             user.enabled = entry.enabled;
+
+            // First, apply group attributes if specified
+            if let Some(ref group_name) = entry.group {
+                if let Some(group) = group_store.get(group_name) {
+                    for (k, v) in &group.attributes {
+                        user.add_attribute(k.clone(), v.clone());
+                    }
+                } else {
+                    warn!(
+                        username = %entry.username,
+                        group = %group_name,
+                        "User references unknown group"
+                    );
+                }
+            }
+
+            // Then, apply direct attributes (override group attributes)
             for (k, v) in entry.attributes {
                 user.add_attribute(k, v);
             }
+
             users.insert(entry.username, user);
         }
-        Ok(Self { users })
+
+        Ok(Self { users, group_store })
+    }
+
+    /// Get a reference to the group store.
+    pub fn group_store(&self) -> &GroupStore {
+        &self.group_store
     }
 }
 

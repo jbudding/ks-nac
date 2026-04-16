@@ -1,0 +1,27 @@
+{
+  "groups": [
+    {
+      "name": "employees",
+      "description": "Standard employee access",
+      "attributes": {
+        "Service-Type": "Framed-User",
+        "Framed-Protocol": "PPP"
+      }
+    },
+    {
+      "name": "contractors",
+      "description": "Limited contractor access",
+      "attributes": {
+        "Service-Type": "Framed-User",
+        "Session-Timeout": "28800"
+      }
+    },
+    {
+      "name": "admins",
+      "description": "Administrative access",
+      "attributes": {
+        "Service-Type": "Administrative-User"
+      }
+    }
+  ]
+}

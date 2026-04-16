@@ -7,7 +7,7 @@ mod radius;
 use auth::{Authenticator, JsonBackend, MemoryBackend};
 use config::ServerConfig;
 use handlers::{AuthHandler, AcctHandler};
-use models::Client;
+use models::{Client, GroupStore};
 
 use anyhow::Result;
 use clap::Parser;
@@ -47,8 +47,34 @@ impl RadiusServer {
             }
         };
 
+        // Load user groups
+        let user_groups = match GroupStore::load_from_file("config/user_groups.json") {
+            Ok(store) => {
+                info!("User groups loaded: {} group(s)", store.len());
+                store.log_groups();
+                Some(store)
+            }
+            Err(e) => {
+                warn!("Could not load user groups: {}", e);
+                None
+            }
+        };
+
+        // Load MAB groups
+        let mab_groups = match GroupStore::load_from_file("config/mab_groups.json") {
+            Ok(store) => {
+                info!("MAB groups loaded: {} group(s)", store.len());
+                store.log_groups();
+                Some(store)
+            }
+            Err(e) => {
+                warn!("Could not load MAB groups: {}", e);
+                None
+            }
+        };
+
         let backend: Arc<dyn auth::AuthBackend> =
-            match JsonBackend::load_from_file("config/users.json") {
+            match JsonBackend::load_with_groups("config/users.json", user_groups) {
                 Ok(b) => {
                     info!("User database loaded from config/users.json");
                     Arc::new(b)
@@ -59,7 +85,12 @@ impl RadiusServer {
                 }
             };
         let authenticator = Arc::new(Authenticator::new(backend));
-        let auth_handler = Arc::new(AuthHandler::new(authenticator)?);
+        let auth_handler = Arc::new(AuthHandler::new_with_groups(
+            authenticator,
+            "config/mab_users.json",
+            "config/dictionaries.json",
+            mab_groups,
+        )?);
         let acct_handler = Arc::new(AcctHandler::new()?);
 
         let mut clients = HashMap::new();

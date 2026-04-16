@@ -4,18 +4,24 @@
       "username": "jbudding",
       "password": "changeme",
       "enabled": true,
-      "attributes": {
-        "Service-Type": "Framed-User",
-        "Framed-Protocol": "PPP"
-      }
+      "group": "employees",
+      "attributes": {}
     },
     {
       "username": "testuser",
       "password": "testpass",
       "enabled": true,
+      "group": "employees",
       "attributes": {
-        "Service-Type": "Framed-User"
+        "Session-Timeout": "3600"
       }
+    },
+    {
+      "username": "admin",
+      "password": "adminpass",
+      "enabled": true,
+      "group": "admins",
+      "attributes": {}
     }
   ]
 }
