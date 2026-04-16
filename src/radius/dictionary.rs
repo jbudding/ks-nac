@@ -234,18 +234,18 @@ impl Dictionary {
                 }
                 "ATTRIBUTE" => {
                     if tokens.len() < 4 {
-                        return Err(DictionaryParseError {
-                            file: file_path.to_string(),
-                            line: line_number,
-                            message: "ATTRIBUTE requires name, code, and type".to_string(),
-                        }.into());
+                        debug!(line = line_number, "ATTRIBUTE missing required fields, skipping");
+                        continue;
                     }
                     let attr_name = tokens[1].to_string();
-                    let attr_code: u8 = tokens[2].parse().map_err(|_| DictionaryParseError {
-                        file: file_path.to_string(),
-                        line: line_number,
-                        message: format!("Invalid attribute code: {}", tokens[2]),
-                    })?;
+                    // Skip extended attributes (e.g., 241.1) and large codes
+                    let attr_code = match Self::parse_attr_code(tokens[2]) {
+                        Some(c) => c,
+                        None => {
+                            debug!(line = line_number, code = tokens[2], "Skipping extended/invalid attribute code");
+                            continue;
+                        }
+                    };
                     let attr_type = Self::normalize_type(tokens[3]);
 
                     if let Some((_, vendor_id)) = current_vendor {
@@ -259,19 +259,19 @@ impl Dictionary {
                 }
                 "VALUE" => {
                     if tokens.len() < 4 {
-                        return Err(DictionaryParseError {
-                            file: file_path.to_string(),
-                            line: line_number,
-                            message: "VALUE requires attribute-name, value-name, and number".to_string(),
-                        }.into());
+                        debug!(line = line_number, "VALUE missing required fields, skipping");
+                        continue;
                     }
                     let attr_name = tokens[1].to_string();
                     let value_name = tokens[2].to_string();
-                    let value_num: u32 = tokens[3].parse().map_err(|_| DictionaryParseError {
-                        file: file_path.to_string(),
-                        line: line_number,
-                        message: format!("Invalid value number: {}", tokens[3]),
-                    })?;
+                    // Support hex values (0x...)
+                    let value_num = match Self::parse_number(tokens[3]) {
+                        Some(n) => n,
+                        None => {
+                            debug!(line = line_number, value = tokens[3], "Skipping invalid value number");
+                            continue;
+                        }
+                    };
 
                     if let Some((_, vendor_id)) = current_vendor {
                         vendor_values
@@ -351,6 +351,28 @@ impl Dictionary {
             "date" | "time" => "date".to_string(),
             _ => type_str.to_string(),
         }
+    }
+
+    /// Parse a number that may be decimal or hex (0x prefix).
+    fn parse_number(s: &str) -> Option<u32> {
+        if s.starts_with("0x") || s.starts_with("0X") {
+            u32::from_str_radix(&s[2..], 16).ok()
+        } else {
+            s.parse().ok()
+        }
+    }
+
+    /// Parse an attribute code - returns None for extended attributes (e.g., 241.1).
+    fn parse_attr_code(s: &str) -> Option<u8> {
+        // Skip extended attributes like "241.1" or ".1"
+        if s.contains('.') {
+            return None;
+        }
+        // Skip hex codes
+        if s.starts_with("0x") || s.starts_with("0X") {
+            return u8::from_str_radix(&s[2..], 16).ok();
+        }
+        s.parse().ok()
     }
 
     /// Load a single vendor dictionary from JSON file.
