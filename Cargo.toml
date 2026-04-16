@@ -18,6 +18,7 @@ config = "0.14"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 async-trait = "0.1"
 rand = "0.8"
+chrono = "0.4"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
 rustls-pemfile = "2.1"
 rcgen = "0.13"
