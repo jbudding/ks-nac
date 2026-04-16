@@ -4,12 +4,14 @@ mod handlers;
 mod logging;
 mod models;
 mod radius;
+mod rules;
 
 use auth::{Authenticator, JsonBackend, MemoryBackend};
 use config::ServerConfig;
 use handlers::{AuthHandler, AcctHandler};
 use logging::SessionLogger;
 use models::{Client, GroupStore};
+use rules::RulesEngine;
 
 use anyhow::Result;
 use clap::Parser;
@@ -87,12 +89,25 @@ impl RadiusServer {
                     Arc::new(MemoryBackend::new())
                 }
             };
+        // Load rules engine
+        let rules_engine = match RulesEngine::load_from_file("config/rules.json") {
+            Ok(engine) => {
+                engine.log_rules();
+                Some(engine)
+            }
+            Err(e) => {
+                warn!("Could not load rules: {} (rules disabled)", e);
+                None
+            }
+        };
+
         let authenticator = Arc::new(Authenticator::new(backend));
-        let auth_handler = Arc::new(AuthHandler::new_with_groups(
+        let auth_handler = Arc::new(AuthHandler::new_with_rules(
             authenticator,
             "config/mab_users.json",
             "config/dictionaries.json",
             mab_groups,
+            rules_engine,
         )?);
         let acct_handler = Arc::new(AcctHandler::new()?);
 

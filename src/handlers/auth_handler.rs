@@ -5,6 +5,8 @@ use crate::auth::{
 };
 use crate::models::{Client, GroupStore};
 use crate::radius::{RadiusPacket, Code, Dictionary, attributes::*};
+use crate::rules::{RulesEngine, RuleResult, Action};
+use crate::rules::condition::EvalContext;
 use anyhow::Result;
 use rustls::server::ServerConfig;
 use std::collections::HashMap;
@@ -21,6 +23,8 @@ pub struct AuthHandler {
     ttls_sessions: Arc<Mutex<HashMap<Vec<u8>, TtlsSession>>>,
     /// TLS server configuration.
     tls_config: Arc<ServerConfig>,
+    /// Rules engine for policy evaluation.
+    rules_engine: Option<RulesEngine>,
 }
 
 impl AuthHandler {
@@ -42,6 +46,16 @@ impl AuthHandler {
         dict_config_path: &str,
         mab_groups: Option<GroupStore>,
     ) -> Result<Self> {
+        Self::new_with_rules(authenticator, mab_path, dict_config_path, mab_groups, None)
+    }
+
+    pub fn new_with_rules(
+        authenticator: Arc<Authenticator>,
+        mab_path: &str,
+        dict_config_path: &str,
+        mab_groups: Option<GroupStore>,
+        rules_engine: Option<RulesEngine>,
+    ) -> Result<Self> {
         let dictionary = Dictionary::load(dict_config_path);
         info!("Loaded {} vendor dictionaries", dictionary.vendor_ids().len());
 
@@ -58,12 +72,18 @@ impl AuthHandler {
 
         let tls_config = create_tls_config()?;
         info!("EAP-TTLS TLS configuration initialized");
+
+        if let Some(ref engine) = rules_engine {
+            info!("Rules engine loaded: {} rule(s)", engine.enabled_rule_count());
+        }
+
         Ok(Self {
             authenticator,
             dictionary,
             mab_list,
             ttls_sessions: Arc::new(Mutex::new(HashMap::new())),
             tls_config,
+            rules_engine,
         })
     }
 
@@ -122,7 +142,21 @@ impl AuthHandler {
         match self.authenticator.authenticate(&username, &password).await? {
             Some(user) => {
                 info!("User {} authenticated successfully", username);
-                self.create_access_accept(packet, &user, client)
+
+                // Evaluate rules if configured
+                let (should_accept, rule_filter_id, rule_attrs) =
+                    self.evaluate_rules(packet, &username, None, false);
+
+                if should_accept {
+                    if rule_filter_id.is_some() || !rule_attrs.is_empty() {
+                        self.create_rules_accept(packet, client, &user.attributes, rule_filter_id, rule_attrs)
+                    } else {
+                        self.create_access_accept(packet, &user, client)
+                    }
+                } else {
+                    warn!("Rules rejected authenticated user: {}", username);
+                    self.create_access_reject(packet, client)
+                }
             }
             None => {
                 warn!("Authentication failed for user: {}", username);
@@ -430,16 +464,48 @@ impl AuthHandler {
             Some(list) => match list.lookup(mac) {
                 Some(entry) => {
                     info!(src = %addr, mac = %mac, "MAB accept");
-                    self.create_mab_accept(packet, entry, client)
+
+                    // Evaluate rules if configured
+                    let (should_accept, rule_filter_id, rule_attrs) =
+                        self.evaluate_rules(packet, mac, None, true);
+
+                    if should_accept {
+                        if rule_filter_id.is_some() || !rule_attrs.is_empty() {
+                            self.create_rules_accept(packet, client, &entry.attributes, rule_filter_id, rule_attrs)
+                        } else {
+                            self.create_mab_accept(packet, entry, client)
+                        }
+                    } else {
+                        warn!(src = %addr, mac = %mac, "Rules rejected MAB entry");
+                        self.create_access_reject(packet, client)
+                    }
                 }
                 None => {
-                    warn!(src = %addr, mac = %mac, "MAB reject: MAC not in list");
-                    self.create_access_reject(packet, client)
+                    // MAC not in list - check if rules have a default accept
+                    let (should_accept, rule_filter_id, rule_attrs) =
+                        self.evaluate_rules(packet, mac, None, true);
+
+                    if should_accept {
+                        info!(src = %addr, mac = %mac, "MAB accept via rules default");
+                        self.create_rules_accept(packet, client, &HashMap::new(), rule_filter_id, rule_attrs)
+                    } else {
+                        warn!(src = %addr, mac = %mac, "MAB reject: MAC not in list");
+                        self.create_access_reject(packet, client)
+                    }
                 }
             },
             None => {
-                warn!(src = %addr, mac = %mac, "MAB reject: no MAB list loaded");
-                self.create_access_reject(packet, client)
+                // No MAB list - check rules
+                let (should_accept, rule_filter_id, rule_attrs) =
+                    self.evaluate_rules(packet, mac, None, true);
+
+                if should_accept {
+                    info!(src = %addr, mac = %mac, "MAB accept via rules (no MAB list)");
+                    self.create_rules_accept(packet, client, &HashMap::new(), rule_filter_id, rule_attrs)
+                } else {
+                    warn!(src = %addr, mac = %mac, "MAB reject: no MAB list loaded");
+                    self.create_access_reject(packet, client)
+                }
             }
         }
     }
@@ -491,5 +557,96 @@ impl AuthHandler {
     /// Get a reference to the dictionary for attribute logging.
     pub fn dictionary(&self) -> &Dictionary {
         &self.dictionary
+    }
+
+    /// Evaluate rules for an authenticated request.
+    /// Returns (should_accept, filter_id, additional_attributes).
+    fn evaluate_rules(
+        &self,
+        packet: &RadiusPacket,
+        username: &str,
+        user_group: Option<&str>,
+        is_mab: bool,
+    ) -> (bool, Option<String>, HashMap<String, String>) {
+        let rules_engine = match &self.rules_engine {
+            Some(engine) => engine,
+            None => return (true, None, HashMap::new()), // No rules = accept
+        };
+
+        // Build evaluation context from packet attributes
+        let calling_station_id = packet.get_string_attribute(CALLING_STATION_ID);
+        let called_station_id = packet.get_string_attribute(CALLED_STATION_ID);
+        let nas_ip_address = packet.get_string_attribute(NAS_IP_ADDRESS);
+        let nas_identifier = packet.get_string_attribute(NAS_IDENTIFIER);
+
+        // Build attributes map from packet
+        let mut attributes = HashMap::new();
+        for attr in &packet.attributes {
+            if let Some(name) = self.dictionary.get_attribute_name(attr.attr_type) {
+                if let Some(s) = attr.as_string() {
+                    attributes.insert(name.clone(), s);
+                }
+            }
+        }
+
+        let ctx = EvalContext {
+            username,
+            calling_station_id: calling_station_id.as_deref(),
+            called_station_id: called_station_id.as_deref(),
+            nas_ip_address: nas_ip_address.as_deref(),
+            nas_identifier: nas_identifier.as_deref(),
+            attributes: &attributes,
+            user_group,
+            is_mab,
+        };
+
+        match rules_engine.evaluate(&ctx) {
+            RuleResult::Accept { rule_name, filter_id, attributes } => {
+                info!(rule = %rule_name, "Rules: ACCEPT");
+                (true, filter_id, attributes)
+            }
+            RuleResult::Reject { rule_name } => {
+                info!(rule = %rule_name, "Rules: REJECT");
+                (false, None, HashMap::new())
+            }
+            RuleResult::Default => {
+                rules_engine.apply_default()
+            }
+        }
+    }
+
+    /// Create an accept response with rule-based attributes.
+    fn create_rules_accept(
+        &self,
+        request: &RadiusPacket,
+        client: &Client,
+        base_attributes: &HashMap<String, String>,
+        rule_filter_id: Option<String>,
+        rule_attributes: HashMap<String, String>,
+    ) -> Result<RadiusPacket> {
+        let mut response = RadiusPacket::new(Code::AccessAccept, request.identifier);
+
+        // First add base attributes (from user/MAB entry)
+        for (key, value) in base_attributes {
+            if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
+                response.add_string_attribute(attr_type, value);
+            }
+        }
+
+        // Then override with rule attributes
+        for (key, value) in &rule_attributes {
+            if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
+                response.add_string_attribute(attr_type, value);
+            }
+        }
+
+        // Add rule-specified Filter-Id (overrides base)
+        if let Some(ref filter_id) = rule_filter_id {
+            response.add_string_attribute(FILTER_ID, filter_id);
+            info!(filter_id = %filter_id, "Returning rule Filter-Id");
+        }
+
+        response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
+        Ok(response)
     }
 }

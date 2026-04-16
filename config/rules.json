@@ -1,0 +1,102 @@
+{
+  "default_action": {
+    "type": "reject"
+  },
+  "rules": [
+    {
+      "name": "allow-employees",
+      "description": "Allow all authenticated employees",
+      "enabled": true,
+      "condition": {
+        "type": "username_ends_with",
+        "suffix": "@company.com"
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "EMPLOYEE-ACL",
+        "attributes": {}
+      }
+    },
+    {
+      "name": "allow-guest-ssid",
+      "description": "Allow guests on guest SSID with restricted access",
+      "enabled": true,
+      "condition": {
+        "type": "all",
+        "conditions": [
+          {
+            "type": "called_station_id_contains",
+            "value": "guest"
+          },
+          {
+            "type": "username_starts_with",
+            "prefix": "guest"
+          }
+        ]
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "GUEST-ACL",
+        "attributes": {
+          "Session-Timeout": "3600"
+        }
+      }
+    },
+    {
+      "name": "block-old-devices",
+      "description": "Block devices with old OUI prefixes",
+      "enabled": false,
+      "condition": {
+        "type": "calling_station_id_starts_with",
+        "prefix": "00:11:22"
+      },
+      "action": {
+        "type": "reject"
+      }
+    },
+    {
+      "name": "allow-mab-known-oui",
+      "description": "Allow MAB for known manufacturer OUIs",
+      "enabled": true,
+      "condition": {
+        "type": "all",
+        "conditions": [
+          {
+            "type": "is_mab"
+          },
+          {
+            "type": "any",
+            "conditions": [
+              {
+                "type": "calling_station_id_starts_with",
+                "prefix": "00:50:56"
+              },
+              {
+                "type": "calling_station_id_starts_with",
+                "prefix": "00:0C:29"
+              }
+            ]
+          }
+        ]
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "VMWARE-ACL",
+        "attributes": {}
+      }
+    },
+    {
+      "name": "default-allow-authenticated",
+      "description": "Allow any authenticated request that passed previous rules",
+      "enabled": true,
+      "condition": {
+        "type": "always"
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": null,
+        "attributes": {}
+      }
+    }
+  ]
+}
