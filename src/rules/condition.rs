@@ -3,44 +3,35 @@ use std::collections::HashMap;
 use regex::Regex;
 use tracing::debug;
 
+/// Comparison operators for attribute matching.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Operator {
+    /// Exact match (case-insensitive).
+    Equals,
+    /// Substring match (case-insensitive).
+    Contains,
+    /// Prefix match (case-insensitive).
+    StartsWith,
+    /// Suffix match (case-insensitive).
+    EndsWith,
+    /// Regular expression match.
+    Regex,
+}
+
 /// A condition that can be evaluated against request attributes.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Condition {
-    /// Match if username equals the specified value.
-    UsernameEquals { value: String },
-    /// Match if username matches a regex pattern.
-    UsernameMatches { pattern: String },
-    /// Match if username ends with suffix (e.g., domain).
-    UsernameEndsWith { suffix: String },
-    /// Match if username starts with prefix.
-    UsernameStartsWith { prefix: String },
+    /// Match a RADIUS attribute using an operator.
+    Attribute {
+        attribute: String,
+        operator: Operator,
+        value: String,
+    },
 
-    /// Match if calling-station-id equals the specified value.
-    CallingStationIdEquals { value: String },
-    /// Match if calling-station-id matches a regex pattern.
-    CallingStationIdMatches { pattern: String },
-    /// Match if calling-station-id starts with prefix (OUI match).
-    CallingStationIdStartsWith { prefix: String },
-
-    /// Match if called-station-id equals the specified value.
-    CalledStationIdEquals { value: String },
-    /// Match if called-station-id matches a regex pattern.
-    CalledStationIdMatches { pattern: String },
-    /// Match if called-station-id contains the specified value.
-    CalledStationIdContains { value: String },
-
-    /// Match if NAS-IP-Address equals the specified value.
-    NasIpAddressEquals { value: String },
-    /// Match if NAS-Identifier equals the specified value.
-    NasIdentifierEquals { value: String },
-    /// Match if NAS-Identifier matches a regex pattern.
-    NasIdentifierMatches { pattern: String },
-
-    /// Match if a specific attribute has a specific value.
-    AttributeEquals { name: String, value: String },
     /// Match if a specific attribute exists.
-    AttributeExists { name: String },
+    AttributeExists { attribute: String },
 
     /// Match if the user belongs to a specific group.
     UserInGroup { group: String },
@@ -75,104 +66,134 @@ impl Condition {
     /// Evaluate this condition against the given context.
     pub fn evaluate(&self, ctx: &EvalContext) -> bool {
         match self {
-            Condition::UsernameEquals { value } => {
-                ctx.username.eq_ignore_ascii_case(value)
-            }
-            Condition::UsernameMatches { pattern } => {
-                match Regex::new(pattern) {
-                    Ok(re) => re.is_match(ctx.username),
-                    Err(_) => {
-                        debug!(pattern = %pattern, "Invalid regex pattern");
-                        false
-                    }
-                }
-            }
-            Condition::UsernameEndsWith { suffix } => {
-                ctx.username.to_lowercase().ends_with(&suffix.to_lowercase())
-            }
-            Condition::UsernameStartsWith { prefix } => {
-                ctx.username.to_lowercase().starts_with(&prefix.to_lowercase())
+            Condition::Attribute { attribute, operator, value } => {
+                let attr_value = get_attribute_value(ctx, attribute);
+                let (matched, actual_display) = match &attr_value {
+                    Some(actual) => (evaluate_operator(operator, actual, value, attribute), actual.clone()),
+                    None => (false, "-".to_string()),
+                };
+                debug!(
+                    attribute = %attribute,
+                    operator = ?operator,
+                    expected = %value,
+                    actual = %actual_display,
+                    matched = %matched,
+                    "Condition: attribute"
+                );
+                matched
             }
 
-            Condition::CallingStationIdEquals { value } => {
-                ctx.calling_station_id
-                    .map(|c| normalize_mac(c) == normalize_mac(value))
-                    .unwrap_or(false)
-            }
-            Condition::CallingStationIdMatches { pattern } => {
-                match (Regex::new(pattern), ctx.calling_station_id) {
-                    (Ok(re), Some(c)) => re.is_match(c),
-                    _ => false,
-                }
-            }
-            Condition::CallingStationIdStartsWith { prefix } => {
-                ctx.calling_station_id
-                    .map(|c| normalize_mac(c).starts_with(&normalize_mac(prefix)))
-                    .unwrap_or(false)
-            }
-
-            Condition::CalledStationIdEquals { value } => {
-                ctx.called_station_id
-                    .map(|c| c.eq_ignore_ascii_case(value))
-                    .unwrap_or(false)
-            }
-            Condition::CalledStationIdMatches { pattern } => {
-                match (Regex::new(pattern), ctx.called_station_id) {
-                    (Ok(re), Some(c)) => re.is_match(c),
-                    _ => false,
-                }
-            }
-            Condition::CalledStationIdContains { value } => {
-                ctx.called_station_id
-                    .map(|c| c.to_lowercase().contains(&value.to_lowercase()))
-                    .unwrap_or(false)
-            }
-
-            Condition::NasIpAddressEquals { value } => {
-                ctx.nas_ip_address
-                    .map(|n| n == value)
-                    .unwrap_or(false)
-            }
-            Condition::NasIdentifierEquals { value } => {
-                ctx.nas_identifier
-                    .map(|n| n.eq_ignore_ascii_case(value))
-                    .unwrap_or(false)
-            }
-            Condition::NasIdentifierMatches { pattern } => {
-                match (Regex::new(pattern), ctx.nas_identifier) {
-                    (Ok(re), Some(n)) => re.is_match(n),
-                    _ => false,
-                }
-            }
-
-            Condition::AttributeEquals { name, value } => {
-                ctx.attributes.get(name)
-                    .map(|v| v.eq_ignore_ascii_case(value))
-                    .unwrap_or(false)
-            }
-            Condition::AttributeExists { name } => {
-                ctx.attributes.contains_key(name)
+            Condition::AttributeExists { attribute } => {
+                let exists = get_attribute_value(ctx, attribute).is_some();
+                debug!(
+                    attribute = %attribute,
+                    exists = %exists,
+                    "Condition: attribute_exists"
+                );
+                exists
             }
 
             Condition::UserInGroup { group } => {
-                ctx.user_group
+                let matched = ctx.user_group
                     .map(|g| g.eq_ignore_ascii_case(group))
-                    .unwrap_or(false)
+                    .unwrap_or(false);
+                debug!(
+                    group = %group,
+                    actual = %ctx.user_group.unwrap_or("-"),
+                    matched = %matched,
+                    "Condition: user_in_group"
+                );
+                matched
             }
 
-            Condition::IsMab => ctx.is_mab,
+            Condition::IsMab => {
+                debug!(is_mab = %ctx.is_mab, "Condition: is_mab");
+                ctx.is_mab
+            }
 
             Condition::All { conditions } => {
-                conditions.iter().all(|c| c.evaluate(ctx))
+                let count = conditions.len();
+                for (i, c) in conditions.iter().enumerate() {
+                    if !c.evaluate(ctx) {
+                        debug!(
+                            total = count,
+                            failed_at = i + 1,
+                            matched = false,
+                            "Condition: all (short-circuit)"
+                        );
+                        return false;
+                    }
+                }
+                debug!(total = count, matched = true, "Condition: all");
+                true
             }
             Condition::Any { conditions } => {
-                conditions.iter().any(|c| c.evaluate(ctx))
+                let count = conditions.len();
+                for (i, c) in conditions.iter().enumerate() {
+                    if c.evaluate(ctx) {
+                        debug!(
+                            total = count,
+                            matched_at = i + 1,
+                            matched = true,
+                            "Condition: any (short-circuit)"
+                        );
+                        return true;
+                    }
+                }
+                debug!(total = count, matched = false, "Condition: any");
+                false
             }
             Condition::Not { condition } => {
-                !condition.evaluate(ctx)
+                let inner = condition.evaluate(ctx);
+                let matched = !inner;
+                debug!(inner = %inner, matched = %matched, "Condition: not");
+                matched
             }
 
-            Condition::Always => true,
+            Condition::Always => {
+                debug!("Condition: always | matched=true");
+                true
+            }
+        }
+    }
+}
+
+/// Get the value of a RADIUS attribute from the context.
+fn get_attribute_value<'a>(ctx: &'a EvalContext, attribute: &str) -> Option<String> {
+    // Handle well-known attributes with dedicated fields
+    match attribute {
+        "User-Name" => Some(ctx.username.to_string()),
+        "Calling-Station-Id" => ctx.calling_station_id.map(|s| s.to_string()),
+        "Called-Station-Id" => ctx.called_station_id.map(|s| s.to_string()),
+        "NAS-IP-Address" => ctx.nas_ip_address.map(|s| s.to_string()),
+        "NAS-Identifier" => ctx.nas_identifier.map(|s| s.to_string()),
+        // Fall back to attributes map for any other attribute
+        _ => ctx.attributes.get(attribute).cloned(),
+    }
+}
+
+/// Evaluate an operator against actual and expected values.
+fn evaluate_operator(operator: &Operator, actual: &str, expected: &str, attribute: &str) -> bool {
+    // Normalize MAC addresses for Calling-Station-Id comparisons
+    let (actual_normalized, expected_normalized) = if attribute == "Calling-Station-Id" {
+        (normalize_mac(actual), normalize_mac(expected))
+    } else {
+        (actual.to_lowercase(), expected.to_lowercase())
+    };
+
+    match operator {
+        Operator::Equals => actual_normalized == expected_normalized,
+        Operator::Contains => actual_normalized.contains(&expected_normalized),
+        Operator::StartsWith => actual_normalized.starts_with(&expected_normalized),
+        Operator::EndsWith => actual_normalized.ends_with(&expected_normalized),
+        Operator::Regex => {
+            match Regex::new(expected) {
+                Ok(re) => re.is_match(actual),
+                Err(_) => {
+                    debug!(pattern = %expected, "Invalid regex pattern");
+                    false
+                }
+            }
         }
     }
 }

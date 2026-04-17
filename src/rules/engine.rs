@@ -106,14 +106,19 @@ impl RulesEngine {
 
     /// Evaluate rules against the given context.
     pub fn evaluate(&self, ctx: &EvalContext) -> RuleResult {
+        debug!(username = %ctx.username, "Starting rules evaluation");
+
         for rule in &self.config.rules {
             if !rule.enabled {
+                debug!(rule = %rule.name, "Rule skipped (disabled)");
                 continue;
             }
 
-            if rule.condition.evaluate(ctx) {
-                debug!(rule = %rule.name, "Rule matched");
+            debug!(rule = %rule.name, "Evaluating rule");
+            let matched = rule.condition.evaluate(ctx);
+            debug!(rule = %rule.name, matched = %matched, "Rule evaluation complete");
 
+            if matched {
                 match &rule.action {
                     Action::Accept { filter_id, attributes } => {
                         info!(rule = %rule.name, filter_id = ?filter_id, "Rule accepted request");
@@ -130,7 +135,7 @@ impl RulesEngine {
                         };
                     }
                     Action::Continue => {
-                        debug!(rule = %rule.name, "Rule matched but continuing");
+                        debug!(rule = %rule.name, "Rule matched with action=continue, proceeding to next rule");
                         continue;
                     }
                 }

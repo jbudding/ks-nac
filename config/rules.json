@@ -5,8 +5,10 @@
       "description": "Allow all authenticated employees",
       "enabled": true,
       "condition": {
-        "type": "username_ends_with",
-        "suffix": "@company.com"
+        "type": "attribute",
+        "attribute": "User-Name",
+        "operator": "ends_with",
+        "value": "@company.com"
       },
       "action": {
         "type": "accept",
@@ -22,12 +24,16 @@
         "type": "all",
         "conditions": [
           {
-            "type": "called_station_id_contains",
+            "type": "attribute",
+            "attribute": "Called-Station-Id",
+            "operator": "contains",
             "value": "guest"
           },
           {
-            "type": "username_starts_with",
-            "prefix": "guest"
+            "type": "attribute",
+            "attribute": "User-Name",
+            "operator": "starts_with",
+            "value": "guest"
           }
         ]
       },
@@ -44,8 +50,10 @@
       "description": "Block devices with old OUI prefixes",
       "enabled": false,
       "condition": {
-        "type": "calling_station_id_starts_with",
-        "prefix": "00:11:22"
+        "type": "attribute",
+        "attribute": "Calling-Station-Id",
+        "operator": "starts_with",
+        "value": "00:11:22"
       },
       "action": {
         "type": "reject"
@@ -65,12 +73,16 @@
             "type": "any",
             "conditions": [
               {
-                "type": "calling_station_id_starts_with",
-                "prefix": "00:50:56"
+                "type": "attribute",
+                "attribute": "Calling-Station-Id",
+                "operator": "starts_with",
+                "value": "00:50:56"
               },
               {
-                "type": "calling_station_id_starts_with",
-                "prefix": "00:0C:29"
+                "type": "attribute",
+                "attribute": "Calling-Station-Id",
+                "operator": "starts_with",
+                "value": "00:0C:29"
               }
             ]
           }
