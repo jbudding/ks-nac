@@ -231,7 +231,7 @@ impl RadiusServer {
             "auth request"
         );
         packet.log_attributes_with_dict(Some(auth_handler.dictionary()));
-        let response = auth_handler.handle_request(&packet, &client, addr).await?;
+        let (response, rule_name) = auth_handler.handle_request(&packet, &client, addr).await?;
 
         // Get result and filter-id from response
         let result = format!("{:?}", response.code);
@@ -246,11 +246,13 @@ impl RadiusServer {
 
         // Log to session file
         session_logger.log_auth(
+            packet.identifier,
             &username,
             calling_station_id.as_deref(),
             called_station_id.as_deref(),
             &result,
             filter_id.as_deref(),
+            rule_name.as_deref(),
         );
 
         let response_data = response.to_bytes();

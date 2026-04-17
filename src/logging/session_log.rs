@@ -30,20 +30,23 @@ impl SessionLogger {
     /// Log an authentication event.
     pub fn log_auth(
         &self,
+        radius_id: u8,
         username: &str,
         calling_station_id: Option<&str>,
         called_station_id: Option<&str>,
         result: &str,
         filter_id: Option<&str>,
+        rule_name: Option<&str>,
     ) {
         let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let calling = calling_station_id.unwrap_or("-");
         let called = called_station_id.unwrap_or("-");
         let filter = filter_id.unwrap_or("-");
+        let rule = rule_name.unwrap_or("-");
 
         let line = format!(
-            "{} | {} | {} | {} | {} | {}\n",
-            timestamp, username, calling, called, result, filter
+            "{} | {} | {} | {} | {} | {} | {} | {}\n",
+            timestamp, radius_id, username, calling, called, result, filter, rule
         );
 
         match self.file.lock() {
@@ -64,7 +67,7 @@ impl SessionLogger {
     pub fn write_header_if_empty(&self) {
         if let Ok(metadata) = std::fs::metadata(&self.path) {
             if metadata.len() == 0 {
-                let header = "# Timestamp | Username | Calling-Station-Id | Called-Station-Id | Result | Filter-Id\n";
+                let header = "# Timestamp | ID | Username | Calling-Station-Id | Called-Station-Id | Result | Filter-Id | Rule\n";
                 if let Ok(mut file) = self.file.lock() {
                     let _ = file.write_all(header.as_bytes());
                     let _ = file.flush();

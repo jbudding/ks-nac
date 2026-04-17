@@ -2,7 +2,7 @@ use crate::rules::condition::{Condition, EvalContext};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs;
-use tracing::{info, warn, debug};
+use tracing::{info, debug};
 
 /// Action to take when a rule matches.
 #[derive(Debug, Clone, Deserialize)]
@@ -19,27 +19,6 @@ pub enum Action {
     Reject,
     /// Continue to the next rule (no action taken).
     Continue,
-}
-
-/// Default action when no rules match.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum DefaultAction {
-    /// Accept with optional filter-id and attributes.
-    Accept {
-        #[serde(default)]
-        filter_id: Option<String>,
-        #[serde(default)]
-        attributes: HashMap<String, String>,
-    },
-    /// Reject the request.
-    Reject,
-}
-
-impl Default for DefaultAction {
-    fn default() -> Self {
-        DefaultAction::Reject
-    }
 }
 
 /// A single rule with a condition and action.
@@ -62,23 +41,11 @@ pub struct Rule {
 fn default_true() -> bool { true }
 
 /// Rules configuration file format.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct RulesConfig {
-    /// Default action when no rules match.
-    #[serde(default)]
-    pub default_action: DefaultAction,
     /// List of rules to evaluate in order.
     #[serde(default)]
     pub rules: Vec<Rule>,
-}
-
-impl Default for RulesConfig {
-    fn default() -> Self {
-        Self {
-            default_action: DefaultAction::Reject,
-            rules: vec![],
-        }
-    }
 }
 
 /// Result of evaluating rules.
@@ -121,7 +88,6 @@ impl RulesEngine {
         info!(
             total = config.rules.len(),
             enabled = enabled_count,
-            default = ?config.default_action,
             "Loaded rules configuration"
         );
 
@@ -175,25 +141,6 @@ impl RulesEngine {
         RuleResult::Default
     }
 
-    /// Get the default action.
-    pub fn default_action(&self) -> &DefaultAction {
-        &self.config.default_action
-    }
-
-    /// Apply the default action, returning filter_id and attributes if accepting.
-    pub fn apply_default(&self) -> (bool, Option<String>, HashMap<String, String>) {
-        match &self.config.default_action {
-            DefaultAction::Accept { filter_id, attributes } => {
-                info!(filter_id = ?filter_id, "Default action: accept");
-                (true, filter_id.clone(), attributes.clone())
-            }
-            DefaultAction::Reject => {
-                info!("Default action: reject");
-                (false, None, HashMap::new())
-            }
-        }
-    }
-
     /// Log the loaded rules summary.
     pub fn log_rules(&self) {
         if self.config.rules.is_empty() {
@@ -211,15 +158,6 @@ impl RulesEngine {
                 status,
                 if desc.is_empty() { String::new() } else { format!(" - {}", desc) }
             );
-        }
-
-        match &self.config.default_action {
-            DefaultAction::Accept { filter_id, .. } => {
-                info!("  Default: ACCEPT (Filter-Id: {})", filter_id.as_deref().unwrap_or("-"));
-            }
-            DefaultAction::Reject => {
-                info!("  Default: REJECT");
-            }
         }
     }
 }
