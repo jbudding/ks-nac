@@ -58,7 +58,7 @@ pub struct EvalContext<'a> {
     pub nas_ip_address: Option<&'a str>,
     pub nas_identifier: Option<&'a str>,
     pub attributes: &'a HashMap<String, String>,
-    pub user_group: Option<&'a str>,
+    pub user_groups: &'a [String],
     pub is_mab: bool,
 }
 
@@ -94,12 +94,17 @@ impl Condition {
             }
 
             Condition::UserInGroup { group } => {
-                let matched = ctx.user_group
-                    .map(|g| g.eq_ignore_ascii_case(group))
-                    .unwrap_or(false);
+                let matched = ctx.user_groups
+                    .iter()
+                    .any(|g| g.eq_ignore_ascii_case(group));
+                let groups_display = if ctx.user_groups.is_empty() {
+                    "-".to_string()
+                } else {
+                    ctx.user_groups.join(", ")
+                };
                 debug!(
                     group = %group,
-                    actual = %ctx.user_group.unwrap_or("-"),
+                    user_groups = %groups_display,
                     matched = %matched,
                     "Condition: user_in_group"
                 );

@@ -1,11 +1,11 @@
 use crate::auth::{
-    Authenticator, MabList, MabEntry, is_mac_address,
+    LocalDatabase, MabEntry, is_mac_address,
     EapPacket, TtlsSession, create_tls_config,
-    EAP_REQUEST, EAP_RESPONSE, EAP_SUCCESS, EAP_FAILURE, EAP_TYPE_IDENTITY, EAP_TYPE_TTLS,
+    EAP_REQUEST, EAP_RESPONSE, EAP_TYPE_IDENTITY, EAP_TYPE_TTLS,
 };
-use crate::models::{Client, GroupStore};
+use crate::models::Client;
 use crate::radius::{RadiusPacket, Code, Dictionary, attributes::*};
-use crate::rules::{RulesEngine, RuleResult, Action};
+use crate::rules::{RulesEngine, RuleResult};
 use crate::rules::condition::EvalContext;
 use anyhow::Result;
 use rustls::server::ServerConfig;
@@ -16,9 +16,8 @@ use tokio::sync::Mutex;
 use tracing::{info, warn, debug};
 
 pub struct AuthHandler {
-    authenticator: Arc<Authenticator>,
+    local_db: Arc<LocalDatabase>,
     dictionary: Dictionary,
-    mab_list: Option<MabList>,
     /// In-flight EAP-TTLS sessions keyed by State attribute bytes.
     ttls_sessions: Arc<Mutex<HashMap<Vec<u8>, TtlsSession>>>,
     /// TLS server configuration.
@@ -28,47 +27,13 @@ pub struct AuthHandler {
 }
 
 impl AuthHandler {
-    pub fn new(authenticator: Arc<Authenticator>) -> Result<Self> {
-        Self::new_with_mab(authenticator, "config/mab_users.json")
-    }
-
-    pub fn new_with_mab(authenticator: Arc<Authenticator>, mab_path: &str) -> Result<Self> {
-        Self::new_with_config(authenticator, mab_path, "config/dictionaries.json")
-    }
-
-    pub fn new_with_config(authenticator: Arc<Authenticator>, mab_path: &str, dict_config_path: &str) -> Result<Self> {
-        Self::new_with_groups(authenticator, mab_path, dict_config_path, None)
-    }
-
-    pub fn new_with_groups(
-        authenticator: Arc<Authenticator>,
-        mab_path: &str,
+    pub fn new(
+        local_db: Arc<LocalDatabase>,
         dict_config_path: &str,
-        mab_groups: Option<GroupStore>,
-    ) -> Result<Self> {
-        Self::new_with_rules(authenticator, mab_path, dict_config_path, mab_groups, None)
-    }
-
-    pub fn new_with_rules(
-        authenticator: Arc<Authenticator>,
-        mab_path: &str,
-        dict_config_path: &str,
-        mab_groups: Option<GroupStore>,
         rules_engine: Option<RulesEngine>,
     ) -> Result<Self> {
         let dictionary = Dictionary::load(dict_config_path);
         info!("Loaded {} vendor dictionaries", dictionary.vendor_ids().len());
-
-        let mab_list = match MabList::load_with_groups(mab_path, mab_groups) {
-            Ok(list) => {
-                info!("MAB user list loaded: {} entries from {}", list.len(), mab_path);
-                Some(list)
-            }
-            Err(e) => {
-                warn!("Could not load MAB user list from {}: {}", mab_path, e);
-                None
-            }
-        };
 
         let tls_config = create_tls_config()?;
         info!("EAP-TTLS TLS configuration initialized");
@@ -78,9 +43,8 @@ impl AuthHandler {
         }
 
         Ok(Self {
-            authenticator,
+            local_db,
             dictionary,
-            mab_list,
             ttls_sessions: Arc::new(Mutex::new(HashMap::new())),
             tls_config,
             rules_engine,
@@ -92,7 +56,7 @@ impl AuthHandler {
         packet: &RadiusPacket,
         client: &Client,
         addr: SocketAddr,
-    ) -> Result<(RadiusPacket, Option<String>)> {
+    ) -> Result<(RadiusPacket, Option<String>, &'static str)> {
         match packet.code {
             Code::AccessRequest => self.handle_access_request(packet, client, addr).await,
             _ => {
@@ -107,7 +71,7 @@ impl AuthHandler {
         packet: &RadiusPacket,
         client: &Client,
         addr: SocketAddr,
-    ) -> Result<(RadiusPacket, Option<String>)> {
+    ) -> Result<(RadiusPacket, Option<String>, &'static str)> {
         let username = packet
             .get_string_attribute(USER_NAME)
             .ok_or_else(|| anyhow::anyhow!("Missing User-Name attribute"))?;
@@ -133,35 +97,30 @@ impl AuthHandler {
                     username = %username,
                     "No supported auth attribute (User-Password/EAP-Message), rejecting"
                 );
-                return Ok((self.create_access_reject(packet, client)?, None));
+                return Ok((self.create_reject(packet, client)?, None, "PAP"));
             }
         };
 
-        info!("Authentication request for user: {} from {}", username, addr);
-
-        match self.authenticator.authenticate(&username, &password).await? {
+        match self.local_db.authenticate(&username, &password) {
             Some(user) => {
-                info!("User {} authenticated successfully", username);
+                info!(src = %addr, username = %username, "PAP authenticated");
 
-                // Evaluate rules if configured
+                // Evaluate rules with user's groups
                 let (should_accept, rule_filter_id, rule_attrs, rule_name) =
-                    self.evaluate_rules(packet, &username, None, false);
+                    self.evaluate_rules(packet, &username, &user.groups, false);
 
                 if should_accept {
-                    let response = if rule_filter_id.is_some() || !rule_attrs.is_empty() {
-                        self.create_rules_accept(packet, client, &user.attributes, rule_filter_id, rule_attrs)?
-                    } else {
-                        self.create_access_accept(packet, &user, client)?
-                    };
-                    Ok((response, rule_name))
+                    info!(src = %addr, username = %username, "PAP accept");
+                    let response = self.create_accept(packet, client, rule_filter_id, rule_attrs)?;
+                    Ok((response, rule_name, "PAP"))
                 } else {
-                    warn!("Rules rejected authenticated user: {}", username);
-                    Ok((self.create_access_reject(packet, client)?, rule_name))
+                    warn!(src = %addr, username = %username, "PAP reject (rules)");
+                    Ok((self.create_reject(packet, client)?, rule_name, "PAP"))
                 }
             }
             None => {
-                warn!("Authentication failed for user: {}", username);
-                Ok((self.create_access_reject(packet, client)?, None))
+                warn!(src = %addr, username = %username, "PAP reject (auth failed)");
+                Ok((self.create_reject(packet, client)?, None, "PAP"))
             }
         }
     }
@@ -177,24 +136,24 @@ impl AuthHandler {
         addr: SocketAddr,
         username: &str,
         eap_data: &[u8],
-    ) -> Result<(RadiusPacket, Option<String>)> {
+    ) -> Result<(RadiusPacket, Option<String>, &'static str)> {
         let eap = match EapPacket::from_bytes(eap_data) {
             Some(p) => p,
             None => {
                 warn!(src = %addr, username = %username, "Malformed EAP packet, rejecting");
-                return Ok((self.create_eap_reject(packet, client, 0)?, None));
+                return Ok((self.create_eap_reject(packet, client, 0)?, None, "EAP-TTLS"));
             }
         };
 
         match (eap.code, eap.eap_type()) {
-            // EAP-Response/Identity → start EAP-TTLS
+            // EAP-Response/Identity -> start EAP-TTLS
             (EAP_RESPONSE, Some(EAP_TYPE_IDENTITY)) => {
                 let identity = eap.identity().unwrap_or_else(|| username.to_string());
                 debug!(src = %addr, identity = %identity, "EAP Identity received, starting TTLS");
-                Ok((self.start_ttls(packet, client, &identity, eap.identifier).await?, None))
+                Ok((self.start_ttls(packet, client, &identity, eap.identifier).await?, None, "EAP-TTLS"))
             }
 
-            // EAP-Response/TTLS → process TLS handshake or inner auth
+            // EAP-Response/TTLS -> process TLS handshake or inner auth
             (EAP_RESPONSE, Some(EAP_TYPE_TTLS)) => {
                 self.process_ttls(packet, client, addr, username, &eap).await
             }
@@ -207,7 +166,7 @@ impl AuthHandler {
                     eap_type = ?eap.eap_type(),
                     "Unsupported EAP type, rejecting"
                 );
-                Ok((self.create_eap_reject(packet, client, eap.identifier)?, None))
+                Ok((self.create_eap_reject(packet, client, eap.identifier)?, None, "EAP-TTLS"))
             }
         }
     }
@@ -258,12 +217,12 @@ impl AuthHandler {
         addr: SocketAddr,
         username: &str,
         eap: &EapPacket,
-    ) -> Result<(RadiusPacket, Option<String>)> {
+    ) -> Result<(RadiusPacket, Option<String>, &'static str)> {
         let state_bytes = match packet.get_attribute(STATE) {
             Some(attr) => attr.value.clone(),
             None => {
                 warn!(src = %addr, username = %username, "EAP-TTLS response missing State attribute");
-                return Ok((self.create_eap_reject(packet, client, eap.identifier)?, None));
+                return Ok((self.create_eap_reject(packet, client, eap.identifier)?, None, "EAP-TTLS"));
             }
         };
 
@@ -273,7 +232,7 @@ impl AuthHandler {
             Some(s) => s,
             None => {
                 warn!(src = %addr, username = %username, "EAP-TTLS: unknown session State");
-                return Ok((self.create_eap_reject(packet, client, eap.identifier)?, None));
+                return Ok((self.create_eap_reject(packet, client, eap.identifier)?, None, "EAP-TTLS"));
             }
         };
 
@@ -286,7 +245,7 @@ impl AuthHandler {
                 response.add_attribute(STATE, state_bytes);
                 drop(sessions);
                 response.finalize_with_message_authenticator(&packet.authenticator, &client.shared_secret);
-                return Ok((response, None));
+                return Ok((response, None, "EAP-TTLS"));
             }
         }
         session.last_radius_id = Some(packet.identifier);
@@ -309,34 +268,34 @@ impl AuthHandler {
 
                 // Verify credentials against backend
                 if let (Some((inner_user, inner_pass)), Some(keys)) = (inner_creds, key_material) {
-                    let auth_result = self.authenticator.authenticate(&inner_user, &inner_pass).await?;
-                    if let Some(user) = auth_result {
-                        info!(src = %addr, username = %inner_user, "EAP-TTLS authentication succeeded");
+                    if let Some(user) = self.local_db.authenticate(&inner_user, &inner_pass) {
+                        info!(src = %addr, username = %inner_user, "EAP-TTLS authenticated");
 
-                        // Evaluate rules if configured
+                        // Evaluate rules with user's groups
                         let (should_accept, rule_filter_id, rule_attrs, rule_name) =
-                            self.evaluate_rules(packet, &inner_user, None, false);
+                            self.evaluate_rules(packet, &inner_user, &user.groups, false);
 
                         if should_accept {
-                            let response = self.create_eap_accept_with_msk_and_rules(
-                                packet, &user, client, eap.identifier, &keys.msk,
+                            info!(src = %addr, username = %inner_user, "EAP-TTLS accept");
+                            let response = self.create_eap_accept_with_msk(
+                                packet, client, eap.identifier, &keys.msk,
                                 rule_filter_id, rule_attrs,
                             )?;
-                            return Ok((response, rule_name));
+                            return Ok((response, rule_name, "EAP-TTLS"));
                         } else {
-                            warn!(src = %addr, username = %inner_user, "Rules rejected EAP-TTLS user");
-                            return Ok((self.create_eap_reject(packet, client, eap.identifier)?, rule_name));
+                            warn!(src = %addr, username = %inner_user, "EAP-TTLS reject (rules)");
+                            return Ok((self.create_eap_reject(packet, client, eap.identifier)?, rule_name, "EAP-TTLS"));
                         }
                     }
                 }
 
-                warn!(src = %addr, username = %username, "EAP-TTLS inner auth failed");
-                return Ok((self.create_eap_reject(packet, client, eap.identifier)?, None));
+                warn!(src = %addr, username = %username, "EAP-TTLS reject (auth failed)");
+                return Ok((self.create_eap_reject(packet, client, eap.identifier)?, None, "EAP-TTLS"));
             }
             Err(e) => {
                 warn!(src = %addr, username = %username, "EAP-TTLS error: {}", e);
                 drop(sessions);
-                return Ok((self.create_eap_reject(packet, client, eap.identifier)?, None));
+                return Ok((self.create_eap_reject(packet, client, eap.identifier)?, None, "EAP-TTLS"));
             }
         };
 
@@ -362,50 +321,12 @@ impl AuthHandler {
         response.add_attribute(EAP_MESSAGE, eap_bytes);
         response.add_attribute(STATE, state_bytes);
         response.finalize_with_message_authenticator(&packet.authenticator, &client.shared_secret);
-        Ok((response, None))
+        Ok((response, None, "EAP-TTLS"))
     }
 
     fn create_eap_accept_with_msk(
         &self,
         request: &RadiusPacket,
-        user: &crate::models::User,
-        client: &Client,
-        eap_id: u8,
-        msk: &[u8; 64],
-    ) -> Result<RadiusPacket> {
-        let mut response = RadiusPacket::new(Code::AccessAccept, request.identifier);
-
-        let eap_success = EapPacket::success(eap_id);
-        response.add_attribute(EAP_MESSAGE, eap_success.to_bytes());
-
-        // Add MS-MPPE-Recv-Key (first 32 bytes of MSK) as VSA
-        let recv_key = self.encrypt_mppe_key(&msk[0..32], &request.authenticator, &client.shared_secret);
-        response.add_attribute(VENDOR_SPECIFIC, self.build_mppe_vsa(MS_MPPE_RECV_KEY, &recv_key));
-
-        // Add MS-MPPE-Send-Key (last 32 bytes of MSK) as VSA
-        let send_key = self.encrypt_mppe_key(&msk[32..64], &request.authenticator, &client.shared_secret);
-        response.add_attribute(VENDOR_SPECIFIC, self.build_mppe_vsa(MS_MPPE_SEND_KEY, &send_key));
-
-        let filter_id = user.attributes.get("Filter-Id");
-        for (key, value) in &user.attributes {
-            if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
-                response.add_string_attribute(attr_type, value);
-            } else {
-                warn!(attribute = %key, "Unknown attribute in user, skipping");
-            }
-        }
-        if let Some(filter) = filter_id {
-            info!(filter_id = %filter, "Returning Filter-Id in EAP accept");
-        }
-
-        response.finalize_with_message_authenticator(&request.authenticator, &client.shared_secret);
-        Ok(response)
-    }
-
-    fn create_eap_accept_with_msk_and_rules(
-        &self,
-        request: &RadiusPacket,
-        user: &crate::models::User,
         client: &Client,
         eap_id: u8,
         msk: &[u8; 64],
@@ -425,26 +346,17 @@ impl AuthHandler {
         let send_key = self.encrypt_mppe_key(&msk[32..64], &request.authenticator, &client.shared_secret);
         response.add_attribute(VENDOR_SPECIFIC, self.build_mppe_vsa(MS_MPPE_SEND_KEY, &send_key));
 
-        // Add base user attributes
-        for (key, value) in &user.attributes {
-            if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
-                response.add_string_attribute(attr_type, value);
-            } else {
-                warn!(attribute = %key, "Unknown attribute in user, skipping");
-            }
-        }
-
-        // Override with rule attributes
+        // Add rule attributes
         for (key, value) in &rule_attributes {
             if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
                 response.add_string_attribute(attr_type, value);
             }
         }
 
-        // Add rule-specified Filter-Id (overrides base)
+        // Add rule-specified Filter-Id
         if let Some(ref filter_id) = rule_filter_id {
             response.add_string_attribute(FILTER_ID, filter_id);
-            info!(filter_id = %filter_id, "Returning rule Filter-Id in EAP accept");
+            info!(filter_id = %filter_id, "Returning Filter-Id in EAP accept");
         }
 
         response.finalize_with_message_authenticator(&request.authenticator, &client.shared_secret);
@@ -465,7 +377,7 @@ impl AuthHandler {
         vsa
     }
 
-    /// Encrypt MPPE key per RFC 2548 §2.4.2
+    /// Encrypt MPPE key per RFC 2548 section 2.4.2
     fn encrypt_mppe_key(&self, key: &[u8], authenticator: &[u8; 16], secret: &str) -> Vec<u8> {
         let mut result = Vec::new();
 
@@ -523,97 +435,61 @@ impl AuthHandler {
         client: &Client,
         addr: SocketAddr,
         mac: &str,
-    ) -> Result<(RadiusPacket, Option<String>)> {
-        match &self.mab_list {
-            Some(list) => match list.lookup(mac) {
-                Some(entry) => {
-                    info!(src = %addr, mac = %mac, "MAB accept");
+    ) -> Result<(RadiusPacket, Option<String>, &'static str)> {
+        let entry = self.local_db.lookup_mab(mac);
+        let groups: Vec<String> = entry.map(|e| e.groups.clone()).unwrap_or_default();
 
-                    // Evaluate rules if configured
-                    let (should_accept, rule_filter_id, rule_attrs, rule_name) =
-                        self.evaluate_rules(packet, mac, None, true);
+        if entry.is_some() {
+            info!(src = %addr, mac = %mac, "MAB entry found");
+        } else {
+            debug!(src = %addr, mac = %mac, "MAB entry not found, using empty groups");
+        }
 
-                    if should_accept {
-                        let response = if rule_filter_id.is_some() || !rule_attrs.is_empty() {
-                            self.create_rules_accept(packet, client, &entry.attributes, rule_filter_id, rule_attrs)?
-                        } else {
-                            self.create_mab_accept(packet, entry, client)?
-                        };
-                        Ok((response, rule_name))
-                    } else {
-                        warn!(src = %addr, mac = %mac, "Rules rejected MAB entry");
-                        Ok((self.create_access_reject(packet, client)?, rule_name))
-                    }
-                }
-                None => {
-                    // MAC not in list - check if rules have a default accept
-                    let (should_accept, rule_filter_id, rule_attrs, rule_name) =
-                        self.evaluate_rules(packet, mac, None, true);
+        // Evaluate rules with MAB entry's groups
+        let (should_accept, rule_filter_id, rule_attrs, rule_name) =
+            self.evaluate_rules(packet, mac, &groups, true);
 
-                    if should_accept {
-                        info!(src = %addr, mac = %mac, "MAB accept via rules default");
-                        Ok((self.create_rules_accept(packet, client, &HashMap::new(), rule_filter_id, rule_attrs)?, rule_name))
-                    } else {
-                        warn!(src = %addr, mac = %mac, "MAB reject: MAC not in list");
-                        Ok((self.create_access_reject(packet, client)?, rule_name))
-                    }
-                }
-            },
-            None => {
-                // No MAB list - check rules
-                let (should_accept, rule_filter_id, rule_attrs, rule_name) =
-                    self.evaluate_rules(packet, mac, None, true);
-
-                if should_accept {
-                    info!(src = %addr, mac = %mac, "MAB accept via rules (no MAB list)");
-                    Ok((self.create_rules_accept(packet, client, &HashMap::new(), rule_filter_id, rule_attrs)?, rule_name))
-                } else {
-                    warn!(src = %addr, mac = %mac, "MAB reject: no MAB list loaded");
-                    Ok((self.create_access_reject(packet, client)?, rule_name))
-                }
-            }
+        if should_accept {
+            info!(src = %addr, mac = %mac, "MAB accept");
+            let response = self.create_accept(packet, client, rule_filter_id, rule_attrs)?;
+            Ok((response, rule_name, "MAB"))
+        } else {
+            warn!(src = %addr, mac = %mac, "MAB reject (rules)");
+            Ok((self.create_reject(packet, client)?, rule_name, "MAB"))
         }
     }
 
-    fn create_mab_accept(&self, request: &RadiusPacket, entry: &MabEntry, client: &Client) -> Result<RadiusPacket> {
+    // -------------------------------------------------------------------------
+    // Response helpers
+    // -------------------------------------------------------------------------
+
+    fn create_accept(
+        &self,
+        request: &RadiusPacket,
+        client: &Client,
+        rule_filter_id: Option<String>,
+        rule_attributes: HashMap<String, String>,
+    ) -> Result<RadiusPacket> {
         let mut response = RadiusPacket::new(Code::AccessAccept, request.identifier);
-        let filter_id = entry.attributes.get("Filter-Id");
-        for (key, value) in &entry.attributes {
+
+        // Add rule attributes
+        for (key, value) in &rule_attributes {
             if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
                 response.add_string_attribute(attr_type, value);
-            } else {
-                warn!(attribute = %key, "Unknown attribute in MAB entry, skipping");
             }
         }
-        if let Some(filter) = filter_id {
-            info!(filter_id = %filter, "Returning Filter-Id in MAB accept");
+
+        // Add rule-specified Filter-Id
+        if let Some(ref filter_id) = rule_filter_id {
+            response.add_string_attribute(FILTER_ID, filter_id);
+            info!(filter_id = %filter_id, "Returning Filter-Id");
         }
+
         response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
         Ok(response)
     }
 
-    // -------------------------------------------------------------------------
-    // PAP
-    // -------------------------------------------------------------------------
-
-    fn create_access_accept(&self, request: &RadiusPacket, user: &crate::models::User, client: &Client) -> Result<RadiusPacket> {
-        let mut response = RadiusPacket::new(Code::AccessAccept, request.identifier);
-        let filter_id = user.attributes.get("Filter-Id");
-        for (key, value) in &user.attributes {
-            if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
-                response.add_string_attribute(attr_type, value);
-            } else {
-                warn!(attribute = %key, "Unknown attribute in user, skipping");
-            }
-        }
-        if let Some(filter) = filter_id {
-            info!(filter_id = %filter, "Returning Filter-Id in user accept");
-        }
-        response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
-        Ok(response)
-    }
-
-    fn create_access_reject(&self, request: &RadiusPacket, client: &Client) -> Result<RadiusPacket> {
+    fn create_reject(&self, request: &RadiusPacket, client: &Client) -> Result<RadiusPacket> {
         let mut response = RadiusPacket::new(Code::AccessReject, request.identifier);
         response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
         Ok(response)
@@ -630,7 +506,7 @@ impl AuthHandler {
         &self,
         packet: &RadiusPacket,
         username: &str,
-        user_group: Option<&str>,
+        user_groups: &[String],
         is_mab: bool,
     ) -> (bool, Option<String>, HashMap<String, String>, Option<String>) {
         let rules_engine = match &self.rules_engine {
@@ -661,7 +537,7 @@ impl AuthHandler {
             nas_ip_address: nas_ip_address.as_deref(),
             nas_identifier: nas_identifier.as_deref(),
             attributes: &attributes,
-            user_group,
+            user_groups,
             is_mab,
         };
 
@@ -680,40 +556,5 @@ impl AuthHandler {
                 (false, None, HashMap::new(), None)
             }
         }
-    }
-
-    /// Create an accept response with rule-based attributes.
-    fn create_rules_accept(
-        &self,
-        request: &RadiusPacket,
-        client: &Client,
-        base_attributes: &HashMap<String, String>,
-        rule_filter_id: Option<String>,
-        rule_attributes: HashMap<String, String>,
-    ) -> Result<RadiusPacket> {
-        let mut response = RadiusPacket::new(Code::AccessAccept, request.identifier);
-
-        // First add base attributes (from user/MAB entry)
-        for (key, value) in base_attributes {
-            if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
-                response.add_string_attribute(attr_type, value);
-            }
-        }
-
-        // Then override with rule attributes
-        for (key, value) in &rule_attributes {
-            if let Some(attr_type) = self.dictionary.get_attribute_type(key) {
-                response.add_string_attribute(attr_type, value);
-            }
-        }
-
-        // Add rule-specified Filter-Id (overrides base)
-        if let Some(ref filter_id) = rule_filter_id {
-            response.add_string_attribute(FILTER_ID, filter_id);
-            info!(filter_id = %filter_id, "Returning rule Filter-Id");
-        }
-
-        response.calculate_response_authenticator(&request.authenticator, &client.shared_secret);
-        Ok(response)
     }
 }

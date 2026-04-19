@@ -6,11 +6,11 @@ mod models;
 mod radius;
 mod rules;
 
-use auth::{Authenticator, JsonBackend, MemoryBackend};
+use auth::LocalDatabase;
 use config::ServerConfig;
 use handlers::{AuthHandler, AcctHandler};
 use logging::SessionLogger;
-use models::{Client, GroupStore};
+use models::Client;
 use rules::RulesEngine;
 
 use anyhow::Result;
@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tracing::{info, warn};
+use tracing::{info, warn, info_span, Instrument};
 use tracing_subscriber;
 
 #[derive(Parser)]
@@ -52,43 +52,17 @@ impl RadiusServer {
             }
         };
 
-        // Load user groups
-        let user_groups = match GroupStore::load_from_file("config/user_groups.json") {
-            Ok(store) => {
-                info!("User groups loaded: {} group(s)", store.len());
-                store.log_groups();
-                Some(store)
+        // Load local user/MAB database
+        let local_db = match LocalDatabase::load_from_file("config/local-users-and-groups.db") {
+            Ok(db) => {
+                db.log_summary();
+                Arc::new(db)
             }
             Err(e) => {
-                warn!("Could not load user groups: {}", e);
-                None
+                return Err(anyhow::anyhow!("Failed to load local database: {}", e));
             }
         };
 
-        // Load MAB groups
-        let mab_groups = match GroupStore::load_from_file("config/mab_groups.json") {
-            Ok(store) => {
-                info!("MAB groups loaded: {} group(s)", store.len());
-                store.log_groups();
-                Some(store)
-            }
-            Err(e) => {
-                warn!("Could not load MAB groups: {}", e);
-                None
-            }
-        };
-
-        let backend: Arc<dyn auth::AuthBackend> =
-            match JsonBackend::load_with_groups("config/users.json", user_groups) {
-                Ok(b) => {
-                    info!("User database loaded from config/users.json");
-                    Arc::new(b)
-                }
-                Err(e) => {
-                    warn!("Could not load config/users.json ({}), using built-in test users", e);
-                    Arc::new(MemoryBackend::new())
-                }
-            };
         // Load rules engine
         let rules_engine = match RulesEngine::load_from_file("config/rules.json") {
             Ok(engine) => {
@@ -101,12 +75,9 @@ impl RadiusServer {
             }
         };
 
-        let authenticator = Arc::new(Authenticator::new(backend));
-        let auth_handler = Arc::new(AuthHandler::new_with_rules(
-            authenticator,
-            "config/mab_users.json",
+        let auth_handler = Arc::new(AuthHandler::new(
+            local_db,
             "config/dictionaries.json",
-            mab_groups,
             rules_engine,
         )?);
         let acct_handler = Arc::new(AcctHandler::new()?);
@@ -174,9 +145,20 @@ impl RadiusServer {
                 let session_logger = self.session_logger.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = Self::process_auth_packet(&data, client, addr, auth_handler, socket, session_logger).await {
-                        tracing::error!("Error processing auth packet: {}", e);
-                    }
+                    // Parse packet early to get ID for the span
+                    let packet = match RadiusPacket::from_bytes(&data) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::error!("Failed to parse auth packet: {}", e);
+                            return;
+                        }
+                    };
+                    let span = info_span!("auth", id = packet.identifier);
+                    async {
+                        if let Err(e) = Self::process_auth_packet(packet, client, addr, auth_handler, socket, session_logger).await {
+                            tracing::error!("Error processing auth packet: {}", e);
+                        }
+                    }.instrument(span).await;
                 });
             } else {
                 warn!("Received packet from unknown client: {}", client_ip);
@@ -198,9 +180,20 @@ impl RadiusServer {
                 let socket = socket.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = Self::process_acct_packet(&data, client, addr, acct_handler, socket).await {
-                        tracing::error!("Error processing acct packet: {}", e);
-                    }
+                    // Parse packet early to get ID for the span
+                    let packet = match RadiusPacket::from_bytes(&data) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::error!("Failed to parse acct packet: {}", e);
+                            return;
+                        }
+                    };
+                    let span = info_span!("acct", id = packet.identifier);
+                    async {
+                        if let Err(e) = Self::process_acct_packet(packet, client, addr, acct_handler, socket).await {
+                            tracing::error!("Error processing acct packet: {}", e);
+                        }
+                    }.instrument(span).await;
                 });
             } else {
                 warn!("Received packet from unknown client: {}", client_ip);
@@ -209,7 +202,7 @@ impl RadiusServer {
     }
 
     async fn process_auth_packet(
-        data: &[u8],
+        packet: RadiusPacket,
         client: Client,
         addr: SocketAddr,
         auth_handler: Arc<AuthHandler>,
@@ -218,7 +211,6 @@ impl RadiusServer {
     ) -> Result<()> {
         use crate::radius::attributes::{CALLED_STATION_ID, CALLING_STATION_ID, FILTER_ID};
 
-        let packet = RadiusPacket::from_bytes(data)?;
         let username = packet.get_string_attribute(1).unwrap_or_else(|| "<unknown>".to_string());
         let calling_station_id = packet.get_string_attribute(CALLING_STATION_ID);
         let called_station_id = packet.get_string_attribute(CALLED_STATION_ID);
@@ -226,12 +218,11 @@ impl RadiusServer {
         info!(
             src = %addr,
             code = ?packet.code,
-            id = packet.identifier,
             username = %username,
-            "auth request"
+            "request"
         );
         packet.log_attributes_with_dict(Some(auth_handler.dictionary()));
-        let (response, rule_name) = auth_handler.handle_request(&packet, &client, addr).await?;
+        let (response, rule_name, auth_type) = auth_handler.handle_request(&packet, &client, addr).await?;
 
         // Get result and filter-id from response
         let result = format!("{:?}", response.code);
@@ -239,14 +230,14 @@ impl RadiusServer {
 
         info!(
             src = %addr,
-            id = response.identifier,
             code = ?response.code,
-            "auth response"
+            "response"
         );
 
         // Log to session file
         session_logger.log_auth(
             packet.identifier,
+            auth_type,
             &username,
             calling_station_id.as_deref(),
             called_station_id.as_deref(),
@@ -261,28 +252,25 @@ impl RadiusServer {
     }
 
     async fn process_acct_packet(
-        data: &[u8],
+        packet: RadiusPacket,
         client: Client,
         addr: SocketAddr,
         acct_handler: Arc<AcctHandler>,
         socket: Arc<UdpSocket>,
     ) -> Result<()> {
-        let packet = RadiusPacket::from_bytes(data)?;
         let username = packet.get_string_attribute(1).unwrap_or_else(|| "<unknown>".to_string());
         info!(
             src = %addr,
             code = ?packet.code,
-            id = packet.identifier,
             username = %username,
-            "acct request"
+            "request"
         );
         packet.log_attributes_with_dict(Some(acct_handler.dictionary()));
         let response = acct_handler.handle_request(&packet, &client, addr).await?;
         info!(
             src = %addr,
-            id = response.identifier,
             code = ?response.code,
-            "acct response"
+            "response"
         );
         let response_data = response.to_bytes();
         socket.send_to(&response_data, addr).await?;

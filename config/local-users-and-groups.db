@@ -1,0 +1,43 @@
+{
+  "entries": [
+    {
+      "type": "user",
+      "username": "jbudding",
+      "password": "changeme",
+      "enabled": true,
+      "groups": ["employees", "admins"]
+    },
+    {
+      "type": "user",
+      "username": "testuser",
+      "password": "testpass",
+      "enabled": true,
+      "groups": ["employees"]
+    },
+    {
+      "type": "user",
+      "username": "admin",
+      "password": "adminpass",
+      "enabled": true,
+      "groups": ["admins"]
+    },
+    {
+      "type": "mab",
+      "mac_address": "aa:06:6c:cd:16:81",
+      "description": "Jeffs iPhone",
+      "groups": ["phones", "byod"]
+    },
+    {
+      "type": "mab",
+      "mac_address": "11:22:33:44:55:66",
+      "description": "Office printer",
+      "groups": ["printers"]
+    },
+    {
+      "type": "mab",
+      "mac_address": "de:ad:be:ef:ca:fe",
+      "description": "IoT sensor",
+      "groups": ["iot"]
+    }
+  ]
+}

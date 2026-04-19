@@ -1,13 +1,16 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct User {
     pub username: String,
     pub password: String,
+    #[serde(default = "default_true")]
     pub enabled: bool,
-    pub attributes: HashMap<String, String>,
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
+
+fn default_true() -> bool { true }
 
 impl User {
     pub fn new(username: String, password: String) -> Self {
@@ -15,7 +18,7 @@ impl User {
             username,
             password,
             enabled: true,
-            attributes: HashMap::new(),
+            groups: Vec::new(),
         }
     }
 
@@ -23,7 +26,7 @@ impl User {
         self.enabled && self.password == password
     }
 
-    pub fn add_attribute(&mut self, key: String, value: String) {
-        self.attributes.insert(key, value);
+    pub fn is_in_group(&self, group: &str) -> bool {
+        self.groups.iter().any(|g| g.eq_ignore_ascii_case(group))
     }
 }

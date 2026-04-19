@@ -1,14 +1,26 @@
 {
   "rules": [
     {
-      "name": "allow-employees",
-      "description": "Allow all authenticated employees",
+      "name": "admin-access",
+      "description": "Full access for administrators",
       "enabled": true,
       "condition": {
-        "type": "attribute",
-        "attribute": "User-Name",
-        "operator": "ends_with",
-        "value": "@company.com"
+        "type": "user_in_group",
+        "group": "admins"
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "ADMIN-ACL",
+        "attributes": {}
+      }
+    },
+    {
+      "name": "employee-access",
+      "description": "Standard employee access",
+      "enabled": true,
+      "condition": {
+        "type": "user_in_group",
+        "group": "employees"
       },
       "action": {
         "type": "accept",
@@ -32,8 +44,8 @@
           {
             "type": "attribute",
             "attribute": "User-Name",
-            "operator": "starts_with",
-            "value": "guest"
+            "operator": "equals",
+            "value": "7a30c2ad283a"
           }
         ]
       },
@@ -46,22 +58,8 @@
       }
     },
     {
-      "name": "block-old-devices",
-      "description": "Block devices with old OUI prefixes",
-      "enabled": false,
-      "condition": {
-        "type": "attribute",
-        "attribute": "Calling-Station-Id",
-        "operator": "starts_with",
-        "value": "00:11:22"
-      },
-      "action": {
-        "type": "reject"
-      }
-    },
-    {
-      "name": "allow-mab-known-oui",
-      "description": "Allow MAB for known manufacturer OUIs",
+      "name": "mab-printers",
+      "description": "Printer access via MAB",
       "enabled": true,
       "condition": {
         "type": "all",
@@ -70,41 +68,72 @@
             "type": "is_mab"
           },
           {
-            "type": "any",
-            "conditions": [
-              {
-                "type": "attribute",
-                "attribute": "Calling-Station-Id",
-                "operator": "starts_with",
-                "value": "00:50:56"
-              },
-              {
-                "type": "attribute",
-                "attribute": "Calling-Station-Id",
-                "operator": "starts_with",
-                "value": "00:0C:29"
-              }
-            ]
+            "type": "user_in_group",
+            "group": "printers"
           }
         ]
       },
       "action": {
         "type": "accept",
-        "filter_id": "VMWARE-ACL",
+        "filter_id": "PRINTER-ACL",
         "attributes": {}
       }
     },
     {
-      "name": "default-allow-authenticated",
-      "description": "Allow any authenticated request that passed previous rules",
+      "name": "mab-phones",
+      "description": "Phone access via MAB",
+      "enabled": true,
+      "condition": {
+        "type": "all",
+        "conditions": [
+          {
+            "type": "is_mab"
+          },
+          {
+            "type": "user_in_group",
+            "group": "phones"
+          }
+        ]
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "PHONE-ACL",
+        "attributes": {}
+      }
+    },
+    {
+      "name": "mab-iot",
+      "description": "IoT device access via MAB",
+      "enabled": true,
+      "condition": {
+        "type": "all",
+        "conditions": [
+          {
+            "type": "is_mab"
+          },
+          {
+            "type": "user_in_group",
+            "group": "iot"
+          }
+        ]
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "IOT-ACL",
+        "attributes": {
+          "Session-Timeout": "86400"
+        }
+      }
+    },
+    {
+      "name": "default-reject",
+      "description": "Reject all unmatched requests",
       "enabled": true,
       "condition": {
         "type": "always"
       },
       "action": {
-        "type": "accept",
-        "filter_id": "GUEST-ACL",
-        "attributes": {}
+        "type": "reject"
       }
     }
   ]

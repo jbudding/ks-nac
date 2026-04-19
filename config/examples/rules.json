@@ -1,0 +1,111 @@
+{
+  "rules": [
+    {
+      "name": "allow-employees",
+      "description": "Allow all authenticated employees",
+      "enabled": true,
+      "condition": {
+        "type": "attribute",
+        "attribute": "User-Name",
+        "operator": "ends_with",
+        "value": "@company.com"
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "EMPLOYEE-ACL",
+        "attributes": {}
+      }
+    },
+    {
+      "name": "allow-guest-ssid",
+      "description": "Allow guests on guest SSID with restricted access",
+      "enabled": true,
+      "condition": {
+        "type": "all",
+        "conditions": [
+          {
+            "type": "attribute",
+            "attribute": "Called-Station-Id",
+            "operator": "contains",
+            "value": "guest"
+          },
+          {
+            "type": "attribute",
+            "attribute": "User-Name",
+            "operator": "starts_with",
+            "value": "guest"
+          }
+        ]
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "GUEST-ACL",
+        "attributes": {
+          "Session-Timeout": "3600"
+        }
+      }
+    },
+    {
+      "name": "block-old-devices",
+      "description": "Block devices with old OUI prefixes",
+      "enabled": false,
+      "condition": {
+        "type": "attribute",
+        "attribute": "Calling-Station-Id",
+        "operator": "starts_with",
+        "value": "00:11:22"
+      },
+      "action": {
+        "type": "reject"
+      }
+    },
+    {
+      "name": "allow-mab-known-oui",
+      "description": "Allow MAB for known manufacturer OUIs",
+      "enabled": true,
+      "condition": {
+        "type": "all",
+        "conditions": [
+          {
+            "type": "is_mab"
+          },
+          {
+            "type": "any",
+            "conditions": [
+              {
+                "type": "attribute",
+                "attribute": "Calling-Station-Id",
+                "operator": "starts_with",
+                "value": "00:50:56"
+              },
+              {
+                "type": "attribute",
+                "attribute": "Calling-Station-Id",
+                "operator": "starts_with",
+                "value": "00:0C:29"
+              }
+            ]
+          }
+        ]
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "VMWARE-ACL",
+        "attributes": {}
+      }
+    },
+    {
+      "name": "default-allow-authenticated",
+      "description": "Allow any authenticated request that passed previous rules",
+      "enabled": true,
+      "condition": {
+        "type": "always"
+      },
+      "action": {
+        "type": "accept",
+        "filter_id": "GUEST-ACL",
+        "attributes": {}
+      }
+    }
+  ]
+}
