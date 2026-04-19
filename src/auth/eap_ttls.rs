@@ -59,6 +59,8 @@ pub struct TtlsSession {
     pub last_radius_id: Option<u8>,
     /// Cached response for retransmits.
     pub cached_response: Option<Vec<u8>>,
+    /// Current phase of EAP-TTLS exchange (1=Start, 2+=Handshake, final=InnerAuth).
+    pub phase: u8,
 }
 
 impl TtlsSession {
@@ -81,6 +83,7 @@ impl TtlsSession {
             gtc_challenge_sent: false,
             last_radius_id: None,
             cached_response: None,
+            phase: 1,
         })
     }
 

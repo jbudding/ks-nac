@@ -201,7 +201,7 @@ impl AuthHandler {
             data: eap_ttls_start,
         };
 
-        debug!(identity = %identity, "Sending EAP-TTLS Start");
+        info!(identity = %identity, phase = 1, "EAP-TTLS challenge: Start");
 
         let mut response = RadiusPacket::new(Code::AccessChallenge, request.identifier);
         response.add_attribute(EAP_MESSAGE, eap_pkt.to_bytes());
@@ -249,6 +249,8 @@ impl AuthHandler {
             }
         }
         session.last_radius_id = Some(packet.identifier);
+        session.phase += 1;
+        let phase = session.phase;
 
         // Extract TTLS data (skip EAP type byte)
         let ttls_data = if eap.data.len() > 1 { &eap.data[1..] } else { &[] };
@@ -269,7 +271,7 @@ impl AuthHandler {
                 // Verify credentials against backend
                 if let (Some((inner_user, inner_pass)), Some(keys)) = (inner_creds, key_material) {
                     if let Some(user) = self.local_db.authenticate(&inner_user, &inner_pass) {
-                        info!(src = %addr, username = %inner_user, "EAP-TTLS authenticated");
+                        info!(src = %addr, username = %inner_user, phase = phase, "EAP-TTLS complete: InnerAuth");
 
                         // Evaluate rules with user's groups
                         let (should_accept, rule_filter_id, rule_attrs, rule_name) =
@@ -313,9 +315,14 @@ impl AuthHandler {
         session.cached_response = Some(eap_bytes.clone());
 
         // Keep the same State throughout the TTLS session
+        let phase_desc = match phase {
+            2 => "ServerHello",
+            3 => "Finished",
+            _ => "Handshake",
+        };
         drop(sessions);
 
-        debug!(src = %addr, "EAP-TTLS: continuing handshake");
+        info!(src = %addr, phase = phase, "EAP-TTLS challenge: {}", phase_desc);
 
         let mut response = RadiusPacket::new(Code::AccessChallenge, packet.identifier);
         response.add_attribute(EAP_MESSAGE, eap_bytes);
